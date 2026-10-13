@@ -1,0 +1,14 @@
+---
+name: diagnose
+description: Diagnose or update an installed Model Bridge for Codex, including failed chats, login issues and compatibility after Codex or Claude Code updates.
+---
+
+The installed CLI is `~/.local/share/codex-claude-bridge/node_modules/.bin/codex-claude`. Run `doctor <codex://threads/UUID>` for a reported chat, or `doctor` for installation/runtime status. It prints the report location; read that report first. `logs <chat-link>` prints only recent allowlisted metadata. Trace IDs join desktop, native and bridge events. Reports include model changes, queue events, forks, config reloads, slow/pending RPC calls and error categories; they exclude prompts, tool payloads, credentials and account details. Retained errors can belong to earlier processes. Logs are bounded, so absence of an event is not proof it never happened.
+
+Use the current run's status and the selected chat to narrow the failure. Do not dump `desktop.log`, `auth.json`, configuration values or raw transcripts into a report. Native desktop logs are separate and may contain private data; inspect only the relevant narrow portion if metadata is insufficient. An HTTP success or tool success does not prove a panel opened visibly.
+
+For an authorized update, use the existing installation method: Codex's normal updater; `claude update` for its native installer, or the existing package manager for managed Claude installations. Keep the Agent SDK pinned to the bridge release. Install a new bridge release with its bundled installer; do not use an unverified similarly named public npm package. The installer checks bundle integrity, stages and verifies the new package before stopping idle work, retains the previous package for recovery, and preserves configuration and chats. If this chat runs in the isolated bridge app, do not stop your own active session.
+
+Run `codex-claude check` after updates. It uses a temporary isolated profile and public protocol calls, never a model prompt. The first start after a version change runs this check automatically. A failed check leaves the normal Codex app untouched and reports the failed stage/category. Do not work around incompatibility by modifying the app, bypassing code-signature checks or guessing private APIs. Use `restart` only after active work finishes and existing authorization covers it.
+
+Where model behavior is still uncertain, use a separate synthetic test chat under existing test authority; never replay real user requests to test a fix. Full GUI parity is not implied by a passing compatibility check. Old prototype chats can retain old native prompt copies; a fresh fork gives clean history after editing those chats.

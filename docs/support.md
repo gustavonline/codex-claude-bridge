@@ -1,0 +1,39 @@
+# Support and acceptance
+
+This is an MVP preview, not full Codex parity. Checks are intentionally divided into deterministic backend contracts, real runtime integration and observed desktop behavior.
+
+| Workflow | Evidence and boundary |
+| --- | --- |
+| GPT and Claude in the picker | Real catalog checks; both visible in the isolated desktop confirmed by its user. Native provider choice remains Codex's. |
+| GPT ↔ Claude, model/reasoning | Real turns and memory handoffs tested; settings events mapped. Precise desktop performance feedback needs visual confirmation. |
+| Edit/resend | Checkpoint-based SDK forks and native history reset tested; desktop edit/resend confirmed by user. Editing messages does not undo files or external actions. |
+| Queue | Persistence, deduplication, reorder, automatic next turn, failure pause and recovery tested. Live Claude queue exercised; visual queue controls still need checking. |
+| Fork | Independent native ID and retained prefix tested with real models. No ephemeral/prediction fork. |
+| Ephemeral chat | Follow-up memory tested with the actual Claude runtime; no bridge/SDK session persistence. No persistent fork or history edit. |
+| Session coordination | Canonical reads, send, queue, wait, interrupt and fork tested. Real Claude read/send/wait and GPT dynamic-tool read exercised. Same workspace/profile and matching permissions only. |
+| Concurrent histories | Six independent synthetic chats, 108 completed turns, bounded pagination and restart tested. This is not proof of very large model context or macOS sleep recovery. |
+| Browser/editor panels | Native signed helpers work and user confirmed browser/editor opening in an earlier isolated build. New builds still need a short visual smoke test. |
+| Skills/plugins/settings | Lazy discovery, current enablement, approval rejection and one-way additions/updates/removals tested. No full catalog injected into Claude. |
+| Images and context | Text, supported local images, image URL/data, mentions and additional context have tests. Audio and image file-ID references are rejected; historical image pixels after model switch need broader proof. |
+| Crash/restart/logging | Interrupted recovery, uncertain tool results, deduplication, content-free logging, rotation and diagnosis tested. No automatic retry of uncertain external actions. |
+| Updates/install | Versioned bundle, integrity checks, staging, idle-only replacement and recovery package. Hosted CI proves source/package checks; local compatibility probes prove the installed runtime contract. |
+
+## Explicitly unsupported or unqualified
+
+Live steering, explicit compaction, native review/rollback/deletion, exact Claude quota/context-meter parity, arbitrary Fast/service tiers, voice/realtime, goals, automation and cloud/remote orchestration are not implemented as full Claude equivalents. Relevant turn-mutating routes fail explicitly. Native sharing, export and global search are not qualified for complete Claude history.
+
+Old prototype chats may retain native prompt copies from before clean tool-host seeding. Fork them before relying on removal of old context after editing. A complete OpenPencil workflow, cross-chat panel placement, macOS sleep recovery and very long SDK compaction sessions remain acceptance work.
+
+## Reproduce
+
+`npm run check` runs synthetic tests without model credentials. `node scripts/live-test.mjs --run` opts into real Claude/Codex usage using disposable local state. `--scenario native` isolates native session-tool and restart checks. `codex-claude check` sends no model prompt and checks installed protocol/catalog compatibility.
+
+Raw local evidence and conversations are not distributed. CI results are attached to exact GitHub revisions; reviewed release notes record runtime versions and outstanding limits. A passing mock is never presented as a live or visual result.
+
+## Short desktop check
+
+1. In a new managed Claude chat, open a URL and a local text file. Confirm both appear in that chat's side panel.
+2. Add two queued messages, then stop one turn and resume deliberately. Confirm the controls reflect the backend state.
+3. Fork that chat, switch the child to GPT and back, and confirm retained memory and model feedback. Confirm panels open in the selected child.
+
+These are visual checks. Model memory, delivery deduplication and backend queue contracts are already covered automatically.

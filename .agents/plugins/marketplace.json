@@ -1,0 +1,10 @@
+{
+  "name": "gustavonline",
+  "interface": { "displayName": "Gustav Online" },
+  "plugins": [{
+    "name": "codex-claude",
+    "source": { "source": "local", "path": "./plugins/codex-claude" },
+    "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+    "category": "Developer Tools"
+  }]
+}

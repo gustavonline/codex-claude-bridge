@@ -1,0 +1,53 @@
+{
+  "name": "codex-claude-bridge-local",
+  "version": "0.3.0-rc.1",
+  "private": true,
+  "type": "module",
+  "description": "Model Bridge \u2014 Claude models beneath the unmodified Codex desktop UI",
+  "bin": {
+    "codex-claude": "cli.mjs"
+  },
+  "files": [
+    "cli.mjs",
+    "diagnose.mjs",
+    "smoke.mjs",
+    "bridge.mjs",
+    "capabilities.mjs",
+    "claude.mjs",
+    "fork.mjs",
+    "history.mjs",
+    "logging.mjs",
+    "mirror.mjs",
+    "native-turns.mjs",
+    "providers.mjs",
+    "queue.mjs",
+    "rpc.mjs",
+    "sessions.mjs",
+    "launch.py",
+    "mirror.py",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "start": "node cli.mjs",
+    "doctor": "node cli.mjs doctor",
+    "check": "npm test && python3 -m py_compile launch.py mirror.py && node scripts/check-package.mjs",
+    "bundle": "node scripts/bundle.mjs",
+    "test:live": "node scripts/live-test.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.296",
+    "@modelcontextprotocol/sdk": "1.29.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "author": "Gustav Online",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gustavonline/codex-claude-bridge.git"
+  }
+}

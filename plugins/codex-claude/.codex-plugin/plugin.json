@@ -1,0 +1,29 @@
+{
+  "name": "codex-claude",
+  "version": "0.3.0-rc.1",
+  "description": "Install, start and diagnose a minimal local Claude Code bridge under the stock Codex desktop app.",
+  "author": {
+    "name": "Gustav Online"
+  },
+  "repository": "https://github.com/gustavonline/codex-claude-bridge",
+  "license": "MIT",
+  "interface": {
+    "displayName": "Model Bridge",
+    "shortDescription": "Claude models in Codex",
+    "longDescription": "Keep the Codex desktop interface and add Claude models through your installed, unmodified Claude Code runtime. Two skills set up or diagnose the small local adapter. One Codex configuration, lazy tools and skills, isolated chats, and metadata-only diagnostics. An independent Gustav Online preview; not an OpenAI or Anthropic product.",
+    "developerName": "Gustav Online",
+    "category": "Developer Tools",
+    "defaultPrompt": [
+      "Install and start Claude in Codex.",
+      "Check my Codex + Claude installation."
+    ],
+    "logo": "./assets/icon.svg",
+    "composerIcon": "./assets/icon.svg"
+  },
+  "skills": "./skills/",
+  "extensions": {
+    "com.openai": {
+      "onboardingSkill": "./skills/setup/SKILL.md"
+    }
+  }
+}
