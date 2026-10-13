@@ -192,6 +192,42 @@ test('F6 invalid fork boundaries do not create uncertain receipts', async () => 
   } finally { f.close(); }
 });
 
+test('RC6 R1 forks exclude a terminal Claude turn until checkpoint and cleanup finish', async () => {
+  for (const outcome of ['interrupted', 'completed', 'failed']) {
+    const f = fixture(), checkpointEntered = deferred(), checkpointRelease = deferred();
+    let current;
+    try {
+      const caller = await f.start(), target = await f.start();
+      const first = await f.send(target, 'finished prefix'); await f.done(first.turn.id);
+      const checkpoint = f.bridge.history.checkpoint;
+      f.bridge.history.checkpoint = async record => {
+        if (record.thread.id === target) { checkpointEntered.resolve(); await checkpointRelease.promise; }
+        return checkpoint(record);
+      };
+      f.controls.query = ({ controller }) => {
+        if (outcome === 'interrupted') controller.abort();
+        if (outcome === 'failed') throw new Error('Synthetic query failure');
+      };
+      current = await f.send(target, 'terminal but still finalizing'); await checkpointEntered.promise;
+      const running = f.bridge.active.get(target);
+      assert.equal(running.turn.status, outcome); assert.equal(running.turn.completedAt, null);
+      const fork = (await f.bridge.request('thread/fork', { threadId: target })).thread;
+      assert.deepEqual(fork.turns.map(t => t.id), [first.turn.id]);
+      await assert.rejects(f.bridge.request('thread/fork', { threadId: target, lastTurnId: current.turn.id }), /active turn/);
+      const args = { operation: 'fork', threadId: target, requestId: randomUUID(), lastTurnId: current.turn.id };
+      await assert.rejects(manage(f, caller, args), /active turn/);
+      assert.equal(f.bridge.records.get(target).sessionForks?.[args.requestId], undefined);
+      const managed = await manage(f, caller, { operation: 'fork', threadId: target, requestId: randomUUID() });
+      assert.deepEqual(f.bridge.records.get(managed.threadId).turns.map(t => t.id), [first.turn.id]);
+      assert.equal(f.bridge.active.get(target), running);
+      checkpointRelease.resolve(); await f.done(current.turn.id);
+      const settled = (await f.bridge.request('thread/fork', { threadId: target, lastTurnId: current.turn.id })).thread;
+      assert.deepEqual(settled.turns.map(t => t.id), [first.turn.id, current.turn.id]);
+      assert.ok(settled.turns.at(-1).completedAt);
+    } finally { checkpointRelease.resolve(); if (current) await f.done(current.turn.id); f.close(); }
+  }
+});
+
 test('F7 a concurrent edit during session loading cannot restore the old transcript', async () => {
   const f = fixture(), entered = deferred(), release = deferred();
   try {

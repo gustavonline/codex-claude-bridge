@@ -128,7 +128,7 @@ async function manage(bridge, caller, target, args, signal, turnId) {
   };
   if (args.operation === 'fork') {
     const prior = priorFork(); if (prior) return prior;
-    forkCount(target, forkInput);
+    forkCount(target, forkInput, bridge.active.get(threadId)?.turn.id);
     if (changing(bridge, threadId)) throw new RpcError('Wait for the source chat change before forking', -32602);
   } else if (['send', 'queue'].includes(args.operation)) {
     if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 64000) throw new RpcError('A nonempty message of at most 64000 characters is required', -32602);
@@ -146,7 +146,7 @@ async function manage(bridge, caller, target, args, signal, turnId) {
   if (args.operation === 'start_queue') return bridge.request('thread/queue/start', { threadId });
   if (args.operation === 'fork') {
     const prior = priorFork(); if (prior) return prior;
-    forkCount(target, forkInput);
+    forkCount(target, forkInput, bridge.active.get(threadId)?.turn.id);
     if (changing(bridge, threadId)) throw new RpcError('Wait for the source chat change before forking', -32602);
     (target.sessionForks ??= {})[args.requestId] = { input: forkInput }; bridge.save(target);
     const result = await bridge.request('thread/fork', { threadId, ...forkInput, excludeTurns: true });

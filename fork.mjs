@@ -2,13 +2,14 @@ import { RpcError } from './rpc.mjs';
 import { provider } from './providers.mjs';
 import { resetNativeHistory } from './native-turns.mjs';
 
-export function forkCount(record, params) {
+export function forkCount(record, params, activeTurnId) {
   if (record.thread.ephemeral) throw new RpcError('Ephemeral chats do not support persistent forks', -32602);
   if (params.path) throw new RpcError('Fork bridge chats by threadId, not an alternative history path', -32602);
   if (params.experimentalPredictionMode || params.ephemeral)
     throw new RpcError('A persistent conversation fork is required for this bridge', -32602);
   if (params.beforeTurnId && params.lastTurnId) throw new RpcError('Choose beforeTurnId or lastTurnId, not both', -32602);
-  const activeIndex = record.turns.findIndex(t => t.status === 'inProgress');
+  // A terminal status can precede asynchronous checkpoint/tool finalization.
+  const activeIndex = record.turns.findIndex(t => t.status === 'inProgress' || t.id === activeTurnId);
   const settled = activeIndex < 0 ? record.turns.length : activeIndex;
   let count = settled;
   const anchor = params.beforeTurnId ?? params.lastTurnId;
@@ -22,7 +23,7 @@ export function forkCount(record, params) {
 }
 
 export async function forkThread(bridge, record, params) {
-  const count = forkCount(record, params);
+  const count = forkCount(record, params, bridge.active.get(record.thread.id)?.turn.id);
   bridge.log('thread.fork_requested', { threadId: record.thread.id, retainedTurns: count,
     reason: params.beforeTurnId ? 'before_turn' : params.lastTurnId ? 'through_turn' : 'settled_prefix' });
   const selected = await bridge.selection(record, params);
