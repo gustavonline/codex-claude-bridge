@@ -45,7 +45,7 @@ chmod +x "$bridge_test_prefix/node_modules/.bin/codex-claude"
     run: (failure = '') => spawnSync('sh', [join(bundle, 'install.command')], { encoding: 'utf8', env: {
       ...process.env, BRIDGE_TEST_HOME: home, BRIDGE_TEST_LOG: log, BRIDGE_TEST_CLI: fake, BRIDGE_TEST_FAILURE: failure } }),
     events: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [],
-    version: () => spawnSync(join(install, 'node_modules/.bin/codex-claude'), ['--version'], { encoding: 'utf8' }).stdout.trim(),
+    version: () => spawnSync(join(install, 'node_modules/.bin/codex-claude'), ['--version'], { encoding: 'utf8' }).stdout?.trim(),
     close: () => rmSync(root, { recursive: true, force: true }),
   };
 }
@@ -85,4 +85,45 @@ test('checksum and concurrent-install failures run no package installer or stop 
       const run = f.run(); assert.notEqual(run.status, 0); assert.deepEqual(f.events(), []); assert.equal(f.version(), '0.2.1');
     } finally { f.close(); }
   }
+});
+
+test('interrupt immediately after moving the previous package restores the usable installation', () => {
+  const f = fixture();
+  try {
+    f.put(join(f.bin, 'mv'), `#!/bin/sh
+/bin/mv "$@" || exit $?
+if [ "$1" = "$BRIDGE_TEST_HOME/.local/share/codex-claude-bridge" ]; then kill -TERM "$PPID"; fi
+`, 0o700);
+    const run = f.run(); assert.notEqual(run.status, 0);
+    assert.equal(f.version(), '0.2.1');
+    assert.equal(existsSync(join(f.parent, '.codex-claude-install-lock')), false);
+  } finally { f.close(); }
+});
+
+test('a source-only plugin downloads the pinned private release via existing GitHub authentication', () => {
+  const f = fixture();
+  try {
+    f.put(join(f.home, 'download.tgz'), 'SYNTHETIC_NPM_ARCHIVE');
+    rmSync(join(f.bundle, 'codex-claude-bridge-local-0.3.0-rc.1.tgz'));
+    f.put(join(f.bin, 'gh'), `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --output ]; then shift; bridge_test_output=$1; fi
+  shift
+done
+echo download >> "$BRIDGE_TEST_LOG"
+cp "$BRIDGE_TEST_HOME/download.tgz" "$bridge_test_output"
+`, 0o700);
+    const run = f.run(); assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(f.events(), ['download', 'npm', 'check', 'stop', 'setup', 'start']);
+    f.put(join(f.bin, 'gh'), '#!/bin/sh\nexit 1\n', 0o700);
+    f.put(join(f.bin, 'curl'), `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then shift; bridge_test_output=$1; fi
+  shift
+done
+echo public-download >> "$BRIDGE_TEST_LOG"
+cp "$BRIDGE_TEST_HOME/download.tgz" "$bridge_test_output"
+`, 0o700);
+    assert.equal(f.run().status, 0); assert.deepEqual(f.events().slice(-3), ['public-download', 'setup', 'start']);
+  } finally { f.close(); }
 });

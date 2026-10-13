@@ -3,7 +3,7 @@ name: setup
 description: Install or start the local Model Bridge for Codex, verify official Claude subscription login, and prepare its isolated Codex window.
 ---
 
-Use this plugin's version-pinned [installer](../../install.command). Resolve its absolute path from this skill's location. It installs the bundled npm package under `~/.local/share/codex-claude-bridge`, checks Claude, and creates `~/Applications/Codex + Claude.command`. The CLI executable is `~/.local/share/codex-claude-bridge/node_modules/.bin/codex-claude`; do not rely on PATH.
+Use this plugin's version-pinned [installer](../../install.command). Resolve its absolute path from this skill's location. It verifies the adjacent npm archive or retrieves the exact pinned GitHub release using existing GitHub access, then installs the package under `~/.local/share/codex-claude-bridge`, checks Claude, and creates `~/Applications/Codex + Claude.command`. The CLI executable is `~/.local/share/codex-claude-bridge/node_modules/.bin/codex-claude`; do not rely on PATH.
 
 Before installation, check macOS, Node >=22, Python >=3.11 and the installed Codex desktop. Reuse existing installations. If a prerequisite is missing, install it with the existing package manager within the user's installation request; do not install a new package manager as a side effect. The installer uses Anthropic's official native installer only when Claude Code is absent. Login uses `claude auth login`; the person completes that login. Never extract, copy or proxy Claude credentials. Do not print raw auth status, which includes account details.
 

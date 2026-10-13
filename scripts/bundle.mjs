@@ -17,6 +17,7 @@ const stage = join(dist, 'stage'); rmSync(stage, { recursive: true, force: true 
 try {
   const plugin = join(stage, 'codex-claude'), installer = join(stage, 'Model Bridge');
   cpSync('plugins/codex-claude', plugin, { recursive: true }); mkdirSync(installer, { recursive: true });
+  cpSync('LICENSE', join(plugin, 'LICENSE'));
   for (const folder of [plugin, installer]) {
     cpSync(archive, join(folder, packed.filename));
     writeFileSync(join(folder, 'bundle.json'), JSON.stringify(bundle, null, 2) + '\n');
