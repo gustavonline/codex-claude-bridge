@@ -14,6 +14,7 @@ function fixture() {
   // Instrument only the HOME reference in a disposable copy. The actual shell
   // control flow runs, while the process's real HOME/account stay untouched.
   put(join(bundle, 'install.command'), readFileSync(new URL('../plugins/codex-claude/install.command', import.meta.url), 'utf8').replaceAll('$HOME', '$BRIDGE_TEST_HOME'));
+  put(join(bundle, 'stage-runtime.sh'), readFileSync(new URL('../plugins/codex-claude/stage-runtime.sh', import.meta.url), 'utf8'));
   put(join(bin, 'uname'), '#!/bin/sh\necho Darwin\n', 0o700);
   put(join(bin, 'claude'), '#!/bin/sh\nexit 0\n', 0o700);
   const cli = version => `#!/bin/sh
@@ -25,25 +26,22 @@ case "$1" in
   *) echo start >> "$BRIDGE_TEST_LOG";;
 esac
 `;
-  const fake = join(root, 'fake-cli'); put(fake, cli('0.3.0-rc.1'), 0o700);
+  put(join(root, 'archive/package/cli.mjs'), cli('0.3.0-rc.1'));
   put(join(install, 'node_modules/.bin/codex-claude'), cli('0.2.1'), 0o700);
   put(join(bin, 'npm'), `#!/bin/sh
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = --prefix ]; then shift; bridge_test_prefix=$1; fi
-  shift
-done
+[ "$1" = ci ] || exit 1
 echo npm >> "$BRIDGE_TEST_LOG"
-mkdir -p "$bridge_test_prefix/node_modules/.bin"
-cp "$BRIDGE_TEST_CLI" "$bridge_test_prefix/node_modules/.bin/codex-claude"
-chmod +x "$bridge_test_prefix/node_modules/.bin/codex-claude"
+[ "$BRIDGE_TEST_FAILURE" != dependencies ]
 `, 0o700);
-  const archive = Buffer.from('SYNTHETIC_NPM_ARCHIVE');
-  put(join(bundle, 'codex-claude-bridge-local-0.3.0-rc.1.tgz'), archive);
+  const archivePath = join(bundle, 'codex-claude-bridge-local-0.3.0-rc.1.tgz');
+  const packed = spawnSync('tar', ['-czf', archivePath, '-C', join(root, 'archive'), 'package']);
+  assert.equal(packed.status, 0, packed.stderr?.toString());
+  const archive = readFileSync(archivePath);
   put(join(bundle, 'bundle.json'), JSON.stringify({ version: '0.3.0-rc.1', sha256: createHash('sha256').update(archive).digest('hex') }));
   const log = join(root, 'events');
   return { root, home, bundle, bin, parent, install, put,
     run: (failure = '') => spawnSync('sh', [join(bundle, 'install.command')], { encoding: 'utf8', env: {
-      ...process.env, BRIDGE_TEST_HOME: home, BRIDGE_TEST_LOG: log, BRIDGE_TEST_CLI: fake, BRIDGE_TEST_FAILURE: failure } }),
+      ...process.env, BRIDGE_TEST_HOME: home, BRIDGE_TEST_LOG: log, BRIDGE_TEST_FAILURE: failure } }),
     events: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [],
     version: () => spawnSync(join(install, 'node_modules/.bin/codex-claude'), ['--version'], { encoding: 'utf8' }).stdout?.trim(),
     close: () => rmSync(root, { recursive: true, force: true }),
@@ -63,14 +61,14 @@ test('installer verifies and stages before stopping, retains recovery package, a
 });
 
 test('installer preflight/busy failures leave the old package usable; post-replacement setup failure restores it', () => {
-  for (const failure of ['check', 'busy', 'setup']) {
+  for (const failure of ['dependencies', 'check', 'busy', 'setup']) {
     const f = fixture();
     try {
       const profile = join(f.home, 'profile/conversation.json'); f.put(profile, 'KEEP_USER_HISTORY');
       const run = f.run(failure); assert.notEqual(run.status, 0);
       assert.equal(f.version(), '0.2.1'); assert.equal(readFileSync(profile, 'utf8'), 'KEEP_USER_HISTORY');
       assert.equal(existsSync(join(f.parent, '.codex-claude-install-lock')), false);
-      if (failure === 'check') assert.ok(!f.events().includes('stop'));
+      if (['dependencies', 'check'].includes(failure)) assert.ok(!f.events().includes('stop'));
       if (failure === 'setup') assert.match(run.stderr, /restored/);
     } finally { f.close(); }
   }
@@ -103,7 +101,7 @@ if [ "$1" = "$BRIDGE_TEST_HOME/.local/share/codex-claude-bridge" ]; then kill -T
 test('a source-only plugin downloads the pinned private release via existing GitHub authentication', () => {
   const f = fixture();
   try {
-    f.put(join(f.home, 'download.tgz'), 'SYNTHETIC_NPM_ARCHIVE');
+    f.put(join(f.home, 'download.tgz'), readFileSync(join(f.bundle, 'codex-claude-bridge-local-0.3.0-rc.1.tgz')));
     rmSync(join(f.bundle, 'codex-claude-bridge-local-0.3.0-rc.1.tgz'));
     f.put(join(f.bin, 'gh'), `#!/bin/sh
 while [ "$#" -gt 0 ]; do

@@ -63,7 +63,7 @@ if [ -x "$bridge_command" ] && [ "$("$bridge_command" --version)" = "$bridge_ver
   bridge_success=1
   exit 0
 fi
-npm install --prefix "$bridge_stage/package" --ignore-scripts --omit=optional --no-audit --no-fund "$bridge_stage/runtime.tgz"
+sh "$bridge_bundle_dir/stage-runtime.sh" "$bridge_stage/runtime.tgz" "$bridge_stage/package"
 bridge_new="$bridge_stage/package/node_modules/.bin/codex-claude"
 [ "$("$bridge_new" --version)" = "$bridge_version" ] || { echo 'Unexpected staged package version.' >&2; exit 1; }
 # The public compatibility check uses a disposable profile and no model prompt.
