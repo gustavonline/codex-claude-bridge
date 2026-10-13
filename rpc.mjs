@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { errorMetadata, logContext } from './logging.mjs';
 const context = params => {
-  const threadId = params.threadId ?? params.thread?.id, turnId = params.turnId ?? params.turn?.id;
+  const threadId = params.threadId ?? params.thread?.id, turnId = params.turnId ?? params.expectedTurnId ?? params.turn?.id;
   return { ...(threadId ? { threadId } : {}), ...(turnId ? { turnId } : {}) };
 };
 

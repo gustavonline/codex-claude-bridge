@@ -10,7 +10,7 @@ Keep the interface you use: model picker, conversations, browser and file panels
 > **macOS preview.** Core conversations and session coordination have automated and real-runtime tests. This is an independent integration, not an OpenAI or Anthropic product, approval, or guarantee of full feature parity. See the [support matrix](docs/support.md).
 
 - Select GPT or Claude and keep the same visible conversation when switching.
-- Edit and resend, queue messages, fork a conversation, and resume after restarting.
+- Edit and resend, steer a running turn, promote a queued message, fork a conversation, and resume after restarting.
 - Inherit Codex instructions, enabled skills and MCP tools, loaded on demand.
 - Read and coordinate bridge chats through one small session adapter.
 - Diagnose failures with correlated, rotating logs that omit message and credential content.

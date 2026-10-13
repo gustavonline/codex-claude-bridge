@@ -14,11 +14,23 @@ export async function queueRequest(bridge, record, method, params) {
   const queue = record.queue ??= [];
   if (method === 'thread/queue/list') return structuredClone(bridge.page(queue, params));
   if (method === 'thread/queue/start') {
-    const old = params.queuedSubmissionId && record.turns.find(t => t.queuedSubmissionId === params.queuedSubmissionId);
+    const pending = params.queuedSubmissionId && [...(bridge.pendingSteers.get(record.thread.id) ?? [])]
+      .find(s => s.queuedSubmissionId === params.queuedSubmissionId);
+    if (pending) await pending.promise;
+    const old = params.queuedSubmissionId && record.turns.find(t => t.queuedSubmissionId === params.queuedSubmissionId
+      || t.steering?.some(s => s.queuedSubmissionId === params.queuedSubmissionId));
+    if (old?.steering?.some(s => s.queuedSubmissionId === params.queuedSubmissionId && s.status === 'uncertain'))
+      throw new RpcError('Steering delivery is uncertain; inspect this turn before sending a new message.');
     if (old) return { turn: { id: old.id, status: old.status, items: [], itemsView: 'notLoaded', error: old.error } };
     const queued = params.queuedSubmissionId ? queue.find(q => q.id === params.queuedSubmissionId) : queue[0];
     if (!queued) throw new RpcError('Queued submission not found', -32602);
     bridge.log('queue.start_requested', { threadId: record.thread.id, queuedSubmissionId: queued.id, queueLength: queue.length });
+    const running = bridge.active.get(record.thread.id);
+    if (running) {
+      const result = await bridge.request('turn/steer', { threadId: record.thread.id, expectedTurnId: running.turn.id,
+        input: queued.input, clientUserMessageId: queued.clientUserMessageId });
+      return { turn: { id: result.turnId, status: running.turn.status, items: [], itemsView: 'notLoaded', error: running.turn.error } };
+    }
     return bridge.begin(record, { threadId: record.thread.id, input: queued.input,
       clientUserMessageId: queued.clientUserMessageId, queuedSubmissionId: queued.id });
   }
@@ -27,6 +39,9 @@ export async function queueRequest(bridge, record, method, params) {
   const accepting = bridge.pendingStarts.get(record.thread.id)?.params.queuedSubmissionId;
   if (accepting && (['thread/queue/reorder'].includes(method) || params.queuedSubmissionId === accepting))
     throw new RpcError('Wait until this queued submission has been accepted');
+  if ([...(bridge.pendingSteers.get(record.thread.id) ?? [])].some(s => s.queuedSubmissionId
+    && (method !== 'thread/queue/add' || params.clientUserMessageId === s.params.clientUserMessageId)))
+    throw new RpcError('Wait until this queued steering message has been accepted');
   let response;
   if (method === 'thread/queue/add') {
     if (!params.clientUserMessageId) throw new RpcError('clientUserMessageId is required', -32602);
@@ -70,11 +85,12 @@ export function acceptQueued(record, params, turn) {
 
 export function continueQueue(bridge, record, status) {
   if (!record.queue?.length) return;
+  if (bridge.pendingSteers.has(record.thread.id) || record.turns.at(-1)?.steering?.some(s => s.status === 'uncertain')) return;
   if (status !== 'completed' || record.archived) {
     bridge.log('queue.paused', { threadId: record.thread.id, reason: record.archived ? 'archived' : status, queueLength: record.queue.length }); return;
   }
   setImmediate(() => {
-    if (bridge.active.has(record.thread.id) || bridge.starting.has(record.thread.id) || bridge.changing.has(record.thread.id) || bridge.reverting.has(record.thread.id)) return;
+    if (bridge.active.has(record.thread.id) || bridge.starting.has(record.thread.id) || bridge.pendingSteers.has(record.thread.id) || bridge.changing.has(record.thread.id) || bridge.reverting.has(record.thread.id)) return;
     bridge.request('thread/queue/start', { threadId: record.thread.id }).catch(error => {
       bridge.log('queue.paused', { threadId: record.thread.id, reason: 'start_failed', queueLength: record.queue.length, ...errorMetadata(error) });
       bridge.emit('warning', { threadId: record.thread.id, message: `Queued message was not started: ${error.message}` });

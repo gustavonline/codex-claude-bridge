@@ -55,6 +55,10 @@ Native app tools still own navigation, panels and host/project behavior. Native 
 
 ## State and failures
 
+Live steering uses the public `turn/steer` contract and its required `expectedTurnId`. Each Claude turn keeps one official SDK query with a streaming input channel; `priority: next` delivers a correction at the next agent-loop boundary, including after an in-flight tool. It does not start another bridge turn or change the active model. Starting a queued message while a turn runs uses that same path. Native managed turns forward the public request to Codex.
+
+Acceptance persists a user item and private retry receipt together with queue removal. SDK result/replay metadata confirms delivery; an earlier result cannot close a query with another accepted input pending. Explicit native rejection restores the queue. Transport uncertainty, cancellation and crash never automatically replay input: canonical history retains it, diagnosis counts unconfirmed receipts, and a deliberate follow-up can rebuild context. Editing/forking uses whole-turn boundaries, including every steering message in that turn. Reusing a client ID with different input is rejected.
+
 A managed chat has a real native ID plus bridge-owned history. State is written by temporary file and rename, with private permissions. On restart, unfinished turns become interrupted and unfinished tool results become uncertain; they are not replayed automatically. A corrupt state file fails visibly rather than silently dropping a conversation.
 
 Mixed-model handoff includes retained user messages, assistant replies and tool results as reference data. A long handoff can exceed a model's context limit; no automatic lossy summarizer is inserted. Very long context, compaction and historical image reconstruction remain explicit acceptance gaps.

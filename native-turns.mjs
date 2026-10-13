@@ -1,6 +1,8 @@
 import { acceptQueued, continueQueue } from './queue.mjs';
 import { handoffContext } from './providers.mjs';
 import { errorMetadata } from './logging.mjs';
+import { settleSteering } from './steering.mjs';
+import { randomUUID } from 'node:crypto';
 
 // Keep the actual native thread ID: desktop tools still belong to this chat.
 // Before handing a mixed conversation back to GPT, remove its old native turns
@@ -29,6 +31,9 @@ export async function resetNativeHistory(bridge, record) {
 
 export async function beginNative(bridge, record, params) {
   await resetNativeHistory(bridge, record);
+  // The public client ID is optional. Give our provisional item and the native
+  // host the same identity even when the caller supplies none.
+  params = { ...params, clientUserMessageId: params.clientUserMessageId ?? randomUUID() };
   const threadId = record.thread.id;
   const context = record.nativeResetRequired ? handoffContext(record.turns, params.additionalContext) : params.additionalContext;
   if (record.nativeHistoryHasLegacySeeds && !record.legacyHistoryNoticeShown) {
@@ -57,7 +62,7 @@ export async function captureNative(bridge, record, method, params) {
     const pending = bridge.nativeStarts.get(threadId);
     turn = { ...structuredClone(params.turn), items: structuredClone(params.turn.items ?? []), provider: 'native' };
     if (pending?.input && !turn.items.some(i => i.type === 'userMessage'))
-      turn.items.push({ type: 'userMessage', id: pending.clientUserMessageId ?? `${turnId}-input`, content: structuredClone(pending.input) });
+      turn.items.push({ type: 'userMessage', id: pending.clientUserMessageId ?? `${turnId}-input`, clientId: pending.clientUserMessageId, content: structuredClone(pending.input) });
     turn.clientUserMessageId = pending?.clientUserMessageId;
     // Native canonical items may add display metadata; retries compare the
     // exact submitted input, independently of the host's presentation shape.
@@ -78,9 +83,20 @@ export async function captureNative(bridge, record, method, params) {
   if (!turn) return;
   if (method === 'item/started' || method === 'item/completed') {
     const item = structuredClone(params.item);
-    // Replace our provisional input with the host's canonical user item.
+    // Match each user message separately: steering gives one turn several
+    // inputs. Never replace the first input with the next steering message.
     let index = turn.items.findIndex(i => i.id === item.id);
-    if (index < 0 && item.type === 'userMessage') index = turn.items.findIndex(i => i.type === 'userMessage');
+    if (item.type === 'userMessage') {
+      const submissions = [{ clientUserMessageId: turn.clientUserMessageId, nativeUserMessageId: turn.nativeUserMessageId, initial: true }, ...(turn.steering ?? [])];
+      const submitted = submissions.find(s => s.nativeUserMessageId === item.id
+        || (s.clientUserMessageId && [item.id, item.clientId].includes(s.clientUserMessageId)))
+        ?? (index < 0 && !item.clientId ? submissions.find(s => !s.nativeUserMessageId) : null);
+      if (submitted) {
+        if (index < 0) index = turn.items.findIndex(i => i.type === 'userMessage' && i.id === submitted.clientUserMessageId);
+        if (submitted.initial) turn.nativeUserMessageId = item.id;
+        else { submitted.nativeUserMessageId = item.id; submitted.status = 'delivered'; }
+      }
+    }
     if (index < 0) turn.items.push(item); else turn.items[index] = item;
     bridge.save(record);
   } else if (method === 'item/agentMessage/delta') {
@@ -97,7 +113,16 @@ export async function captureNative(bridge, record, method, params) {
             ...(cursor ? { cursor } : {}) });
           items.push(...page.data.map(row => row.item)); cursor = page.nextCursor;
         } while (cursor);
-        if (items.length) turn.items = items;
+        if (items.length) {
+          for (const receipt of turn.steering ?? []) {
+            const item = items.find(i => i.type === 'userMessage' && (i.clientId === receipt.clientUserMessageId || i.id === receipt.nativeUserMessageId));
+            if (item) { receipt.nativeUserMessageId = item.id; receipt.status = 'delivered'; }
+          }
+          // A late/missing hydration result must not erase accepted input.
+          const missing = turn.items.filter(i => i.type === 'userMessage' && !items.some(n => n.id === i.id
+            || (i.clientId && n.clientId === i.clientId)));
+          turn.items = [...items, ...missing];
+        }
       } catch (error) {
         // Streaming items are retained if history hydration is temporarily unavailable.
         bridge.log('history.native_hydration_failed', { threadId, turnId, ...errorMetadata(error) });
@@ -105,6 +130,7 @@ export async function captureNative(bridge, record, method, params) {
       const { items, itemsView, ...state } = params.turn;
       Object.assign(turn, state, { itemsView: 'full' });
       if (turn.status === 'failed') record.nativeResetRequired = true;
+      if (!bridge.pendingSteers.has(threadId)) settleSteering(bridge, record, turn);
       record.updatedAt = Math.floor(Date.now() / 1000);
       if (bridge.active.get(threadId)?.turn.id === turnId) {
         bridge.active.get(threadId).controller?.abort(); bridge.active.delete(threadId);

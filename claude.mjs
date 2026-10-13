@@ -58,9 +58,10 @@ export async function inputContent(input, additionalContext) {
   return blocks;
 }
 
-export function startQuery({ record, input, additionalContext, promptId, systemPrompt, mcp, controller, outputSchema }) {
+export function startQuery({ record, input, additionalContext, promptId, systemPrompt, mcp, controller, outputSchema, steeringInput }) {
   const prompt = (async function* () {
     yield { type: 'user', uuid: promptId, message: { role: 'user', content: await inputContent(input, additionalContext) }, parent_tool_use_id: null, session_id: record.claudeSessionId ?? '' };
+    if (steeringInput) yield* steeringInput;
   })();
   return query({ prompt, options: options({
     cwd: record.thread.cwd, model: record.model,
@@ -70,6 +71,7 @@ export function startQuery({ record, input, additionalContext, promptId, systemP
     systemPrompt: { type: 'custom', prompt: systemPrompt, snapshot: false },
     mcpServers: { codex: mcp }, includePartialMessages: true, persistSession: !record.thread.ephemeral,
     abortController: controller,
+    extraArgs: { 'strict-mcp-config': null, 'replay-user-messages': null },
     canUseTool: async (name, args) => name.startsWith('mcp__codex__')
       ? { behavior: 'allow', updatedInput: args }
       : { behavior: 'deny', message: 'Use the Codex tools supplied by this bridge.' },
