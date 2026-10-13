@@ -72,6 +72,9 @@ const hints = {
   usage_limit: 'Wait for provider quota, or select another available model.',
   connection_closed: 'Check process exit events and interrupted turns before retrying.',
   permission: 'Check the chat permission profile and tool approval result.',
+  unsupported_method: 'Check whether this bridge version supports the requested desktop action.',
+  stale_turn: 'Refresh the active turn before steering; never redirect a stale message to a different turn.',
+  steering_delivery: 'Read the retained turn and steering receipts before retrying an unconfirmed message.',
 };
 
 export function diagnose(state, { thread, isAlive = bridgeAlive, at = Date.now() } = {}) {
@@ -98,6 +101,9 @@ export function diagnose(state, { thread, isAlive = bridgeAlive, at = Date.now()
       threads.push({ ...safeFields({ threadId: r.thread?.id, model: r.model, provider: r.provider ?? 'claude', effort: r.effort,
         turnId: last?.id, status: last?.status ?? 'idle', ...(last?.error ? errorMetadata(last.error) : {}) }),
         turnCount: r.turns.length, queueLength: r.queue?.length ?? 0, activeTurns: r.turns.filter(t => t.status === 'inProgress').length,
+        steering: { accepted: r.turns.flatMap(t => t.steering ?? []).filter(s => s.status === 'accepted').length,
+          delivered: r.turns.flatMap(t => t.steering ?? []).filter(s => s.status === 'delivered').length,
+          uncertain: r.turns.flatMap(t => t.steering ?? []).filter(s => s.status === 'uncertain').length },
         archived: r.archived === true, legacyHistory: r.nativeHistoryHasLegacySeeds === true || (!r.neutralNativeSeed && r.turns.length > 0) });
     } catch { unreadableStates++; }
   }

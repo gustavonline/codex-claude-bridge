@@ -17,10 +17,11 @@ import { configurationMirror } from './mirror.mjs';
 import { beginNative, captureNative } from './native-turns.mjs';
 import { isClaude, provider, nativeSelection, adoptNativeThread, finishQueueMigration, reloadNativeHost, handoffContext } from './providers.mjs';
 import { sessionCall, sessionNamespace, withSessionTools } from './sessions.mjs';
+import { messageStream, submission, steerTurn, steeringResult, settleSteering } from './steering.mjs';
 
 const now = () => Math.floor(Date.now() / 1000);
 const clone = value => structuredClone(value);
-const publicTurn = ({ claudePromptId, claudeSessionId, claudeCheckpoint, queuedSubmissionId, provider, clientUserMessageId, submittedInput, ...turn }) => turn;
+const publicTurn = ({ claudePromptId, claudeSessionId, claudeCheckpoint, queuedSubmissionId, provider, clientUserMessageId, submittedInput, steering, nativeUserMessageId, ...turn }) => turn;
 const envelope = turn => ({ ...publicTurn(turn), items: [], itemsView: 'notLoaded' });
 const workspacePath = path => { try { return realpathSync(path); } catch { return resolve(path); } };
 const mergeOptions = (previous, params) => {
@@ -35,7 +36,7 @@ export class Bridge {
     Object.assign(this, { native, desktop, statePath, getModels, runQuery, history, log });
     this.records = new Map(); this.active = new Map(); this.loaded = new Set(); this.starting = new Set();
     this.reverting = new Set();
-    this.changing = new Set(); this.pendingStarts = new Map();
+    this.changing = new Set(); this.pendingStarts = new Map(); this.pendingSteers = new Map();
     this.settingsWaiters = new Map();
     this.closeWaiters = new Map();
     this.nativeStarts = new Map(); this.nativeCompletions = new Map(); this.internalReverts = new Map();
@@ -57,6 +58,9 @@ export class Bridge {
         turn.status = 'interrupted'; turn.error = { message: 'Bridge stopped before this turn completed.', codexErrorInfo: 'other' };
         for (const item of turn.items) if (item.type === 'mcpToolCall' && item.status === 'inProgress')
           Object.assign(item, { status: 'failed', error: { message: 'Bridge stopped before receiving the tool result; an external action may already have run.' } });
+      }
+      for (const turn of record.turns) if (turn.steering?.some(s => s.status === 'accepted')) {
+        recovered = true; settleSteering(this, record, turn);
       }
       this.records.set(record.thread.id, record);
       // Persist recovery immediately so a later CLI stop/status does not mistake
@@ -108,7 +112,7 @@ export class Bridge {
   }
   async exclusive(record, work, allowActive = false) {
     const id = record.thread.id;
-    if (this.changing.has(id) || this.reverting.has(id) || this.starting.has(id) || (!allowActive && this.active.has(id)))
+    if (this.changing.has(id) || this.reverting.has(id) || this.starting.has(id) || this.pendingSteers.has(id) || (!allowActive && this.active.has(id)))
       throw new RpcError('Wait for the current turn or chat change to finish');
     this.changing.add(id);
     try { return await work(); } finally { this.changing.delete(id); }
@@ -335,7 +339,7 @@ export class Bridge {
         }
         running?.controller.abort(); running?.query?.close(); return {};
       }
-      if (method === 'turn/steer') throw new RpcError('Use the message queue or interrupt and follow-up; live steering is not implemented in managed chats.', -32601);
+      if (method === 'turn/steer') return steerTurn(this, record, params);
       if (method === 'thread/settings/update') return this.exclusive(record, async () => {
         this.checkWorkspace(record, params);
         const supported = new Set(['threadId', 'cwd', 'model', 'effort', 'collaborationMode', 'permissions', 'sandboxPolicy', 'approvalPolicy', 'approvalsReviewer', 'disabledPluginIds']);
@@ -436,7 +440,7 @@ export class Bridge {
   async revert(record, params) {
     const threadId = record.thread.id;
     if (record.thread.ephemeral) throw new RpcError('Ephemeral Claude chats do not support history editing', -32602);
-    if (this.active.has(threadId) || this.starting.has(threadId)) throw new RpcError('Interrupt the active Claude turn before editing history');
+    if (this.active.has(threadId) || this.starting.has(threadId) || this.pendingSteers.has(threadId)) throw new RpcError('Interrupt the active Claude turn before editing history');
     const index = record.turns.findIndex(t => t.id === params.beforeTurnId);
     if (index < 0) throw new RpcError('Turn not found in this Claude chat', -32602);
     this.reverting.add(threadId);
@@ -479,18 +483,25 @@ export class Bridge {
       backwardsCursor: page.data.length ? `at:${id(page.data[0])}` : null };
   }
   async begin(record, params) {
-    const previous = params.clientUserMessageId && record.turns.find(t => t.clientUserMessageId === params.clientUserMessageId
-      || t.items.some(i => i.type === 'userMessage' && (i.id === params.clientUserMessageId || i.clientId === params.clientUserMessageId)));
+    const pendingSteer = [...(this.pendingSteers.get(record.thread.id) ?? [])].find(s => s.params.clientUserMessageId === params.clientUserMessageId && params.clientUserMessageId);
+    if (pendingSteer) {
+      if (!isDeepStrictEqual(pendingSteer.params.input, params.input)) throw new RpcError('This clientUserMessageId already belongs to a different message.', -32602);
+      const { turnId } = await pendingSteer.promise;
+      return { turn: envelope(record.turns.find(t => t.id === turnId)) };
+    }
+    const acceptedInput = submission(record, params.clientUserMessageId);
+    const previous = acceptedInput?.turn;
     const pending = this.pendingStarts.get(record.thread.id);
-    const duplicate = previous?.submittedInput ?? previous?.items.find(i => i.type === 'userMessage')?.content
+    const duplicate = acceptedInput?.input
       ?? (params.clientUserMessageId && pending?.params.clientUserMessageId === params.clientUserMessageId ? pending.params.input : undefined);
     if (duplicate) {
       if (!isDeepStrictEqual(duplicate, params.input)) throw new RpcError('This clientUserMessageId already belongs to a different message.', -32602);
       if (!previous) return pending.promise;
+      if (acceptedInput.steer?.status === 'uncertain') throw new RpcError('Steering delivery is uncertain; inspect this turn before sending a new message.');
       this.log('turn.replayed', { threadId: record.thread.id, turnId: previous.id });
       return { turn: envelope(previous) };
     }
-    if (this.changing.has(record.thread.id) || this.reverting.has(record.thread.id)) throw new RpcError('Wait for the current chat change to finish');
+    if (this.changing.has(record.thread.id) || this.reverting.has(record.thread.id) || this.pendingSteers.has(record.thread.id)) throw new RpcError('Wait for the current chat change to finish');
     if (this.active.has(record.thread.id) || this.starting.has(record.thread.id)) throw new RpcError('A turn is already running. Queue the message or interrupt before starting another.', -32602);
     this.starting.add(record.thread.id);
     this.log('turn.preparing', { threadId: record.thread.id, queuedSubmissionId: params.queuedSubmissionId });
@@ -521,7 +532,7 @@ export class Bridge {
     const additionalContext = !record.claudeSessionId && record.turns.length ? handoffContext(record.turns, params.additionalContext) : params.additionalContext;
     const turn = { id: randomUUID(), claudePromptId: randomUUID(), status: 'inProgress', startedAt: now(), completedAt: null, error: null,
       items: [{ id: params.clientUserMessageId ?? randomUUID(), type: 'userMessage', content: params.input }], itemsView: 'full', provider: 'claude' };
-    const running = { turn, controller: new AbortController(), query: null };
+    const running = { turn, controller: new AbortController(), query: null, steeringInput: messageStream() };
     const queued = acceptQueued(record, params, turn);
     record.turns.push(turn); record.updatedAt = now();
     record.thread.preview ||= params.input.filter(p => p.type === 'text').map(p => p.text).join(' ').slice(0, 200);
@@ -572,7 +583,7 @@ export class Bridge {
       running.mcp = mcp;
       stage = 'claude_query';
       const query = this.runQuery({ record, input: params.input, additionalContext: params.additionalContext,
-        promptId: turn.claudePromptId, systemPrompt, mcp, controller, outputSchema: params.outputSchema });
+        promptId: turn.claudePromptId, systemPrompt, mcp, controller, outputSchema: params.outputSchema, steeringInput: running.steeringInput });
       running.query = query;
       for await (const message of query) {
         controller.signal.throwIfAborted();
@@ -611,15 +622,17 @@ export class Bridge {
             item('started', value); item('completed', value);
           }
         }
+        steeringResult(this, record, running, message);
       }
       controller.signal.throwIfAborted();
-      if (!receivedResult) throw new Error('Claude stopped without a result');
+      if (!receivedResult || turn.steering?.some(s => s.status !== 'delivered')) throw new Error('Claude stopped without a result for every accepted message');
       turn.status = 'completed';
     } catch (error) {
       this.log('turn.error', { threadId, turnId: turn.id, stage, ...errorMetadata(error) });
       turn.status = controller.signal.aborted ? 'interrupted' : 'failed';
       if (turn.status === 'failed') turn.error = { message: error.message, codexErrorInfo: /limit|quota|rate.?limit/i.test(error.message) ? 'usageLimitExceeded' : 'other' };
     } finally {
+      running.acceptingSteering = false; running.steeringInput.close();
       try { running.query?.close(); await running.mcp?.instance.close(); }
       catch (error) { this.log('turn.cleanup_failed', { threadId, turnId: turn.id, ...errorMetadata(error) }); }
       try { turn.claudeCheckpoint = await this.history.checkpoint(record); }
@@ -633,6 +646,7 @@ export class Bridge {
       // view so late completion cannot rewrite the already-finalized transcript.
       turn.items = clone(turn.items);
       turn.completedAt = now(); turn.durationMs = (turn.completedAt - turn.startedAt) * 1000;
+      settleSteering(this, record, turn);
       record.updatedAt = now(); this.active.delete(threadId); this.save(record);
       this.log('turn.finished', { threadId, turnId: turn.id, status: turn.status, durationMs: turn.durationMs });
       this.emit('turn/completed', { threadId, turn: envelope(turn) });

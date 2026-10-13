@@ -8,6 +8,7 @@ This is an MVP preview, not full Codex parity. Checks are intentionally divided 
 | GPT ↔ Claude, model/reasoning | Real turns and memory handoffs tested; settings events mapped. Precise desktop performance feedback needs visual confirmation. |
 | Edit/resend | Checkpoint-based SDK forks and native history reset tested; desktop edit/resend confirmed by user. Editing messages does not undo files or external actions. |
 | Queue | Persistence, deduplication, reorder, automatic next turn, failure pause and recovery tested. Live Claude queue exercised; visual queue controls still need checking. |
+| Live steering | `turn/steer` targets the current turn; starting a queued message while active promotes it to that turn. Claude uses official streaming input at the next agent-loop boundary; GPT uses native steering. Repeated IDs return the accepted turn. Stop does not undo a tool already dispatched. Visual controls still need checking. |
 | Fork | Independent native ID and retained prefix tested with real models. No ephemeral/prediction fork. |
 | Ephemeral chat | Follow-up memory tested with the actual Claude runtime; no bridge/SDK session persistence. No persistent fork or history edit. |
 | Session coordination | Canonical reads, send, queue, wait, interrupt and fork tested. Real Claude read/send/wait and GPT dynamic-tool read exercised. Same workspace/profile and matching permissions only. |
@@ -20,13 +21,13 @@ This is an MVP preview, not full Codex parity. Checks are intentionally divided 
 
 ## Explicitly unsupported or unqualified
 
-Live steering, explicit compaction, native review/rollback/deletion, exact Claude quota/context-meter parity, arbitrary Fast/service tiers, voice/realtime, goals, automation and cloud/remote orchestration are not implemented as full Claude equivalents. Relevant turn-mutating routes fail explicitly. Native sharing, export and global search are not qualified for complete Claude history.
+Explicit compaction, native review/rollback/deletion, exact Claude quota/context-meter parity, arbitrary Fast/service tiers, voice/realtime, goals, automation and cloud/remote orchestration are not implemented as full Claude equivalents. Relevant turn-mutating routes fail explicitly. Native sharing, export and global search are not qualified for complete Claude history.
 
 Old prototype chats may retain native prompt copies from before clean tool-host seeding. Fork them before relying on removal of old context after editing. A complete OpenPencil workflow, cross-chat panel placement, macOS sleep recovery and very long SDK compaction sessions remain acceptance work.
 
 ## Reproduce
 
-`npm run check` runs synthetic tests without model credentials. `node scripts/live-test.mjs --run --copy-codex-auth` opts into real Claude/Codex usage and temporary Codex-login copies using disposable private local state. `--scenario native` isolates native session-tool and restart checks. `codex-claude check` copies no Codex auth file, sends no model prompt and checks installed protocol/catalog compatibility.
+`npm run check` runs synthetic tests without model credentials. `node scripts/live-test.mjs --run --copy-codex-auth` opts into real Claude/Codex usage and temporary Codex-login copies using disposable private local state. `--scenario native` isolates native session-tool and restart checks; `--scenario steering` tests direct and queued steering during a synthetic tool call, then retries and memory after restart. `codex-claude check` copies no Codex auth file, sends no model prompt and checks installed protocol/catalog compatibility.
 
 Session management under interactive approval policies asks in the desktop; `never` is explicit noninteractive delegation within matching workspace/permission boundaries. Shell calls under `untrusted`/`on-failure` conservatively ask before execution. Unknown or granular prompt policies are not mapped and fail explicitly; there is no permission escalation.
 
@@ -35,7 +36,7 @@ Raw local evidence and conversations are not distributed. CI results are attache
 ## Short desktop check
 
 1. In a new managed Claude chat, open a URL and a local text file. Confirm both appear in that chat's side panel.
-2. Add two queued messages, then stop one turn and resume deliberately. Confirm the controls reflect the backend state.
+2. During a longer answer, send a correction directly, then promote a queued message. Confirm both appear in the same active turn. Stop another turn and resume deliberately; confirm remaining queued messages are preserved.
 3. Fork that chat, switch the child to GPT and back, and confirm retained memory and model feedback. Confirm panels open in the selected child.
 
 These are visual checks. Model memory, delivery deduplication and backend queue contracts are already covered automatically.

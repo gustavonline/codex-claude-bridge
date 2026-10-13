@@ -51,13 +51,23 @@ export function fixture(configuredProvider = 'openai') {
       // Exercise notifications arriving before the RPC's response.
       await bridge.nativeNotification('turn/started', { threadId: p.threadId, turn: structuredClone(turn) });
       setImmediate(async () => {
-        turn.items.push({ type: 'userMessage', id: randomUUID(), content: structuredClone(controls.nativeUserInput ? controls.nativeUserInput(p.input) : p.input) });
+        turn.items.push({ type: 'userMessage', id: randomUUID(), clientId: p.clientUserMessageId, content: structuredClone(controls.nativeUserInput ? controls.nativeUserInput(p.input) : p.input) });
+        await bridge.nativeNotification('item/completed', { threadId: p.threadId, turnId: turn.id, item: turn.items[0] });
+        if (controls.nativeTurn) await controls.nativeTurn(turn);
         turn.items.push({ type: 'agentMessage', id: randomUUID(), text: 'NATIVE RESULT' });
         for (const item of turn.items) await bridge.nativeNotification('item/completed', { threadId: p.threadId, turnId: turn.id, item });
         turn.status = 'completed';
         await bridge.nativeNotification('turn/completed', { threadId: p.threadId, turn: { ...turn, items: [], itemsView: 'notLoaded' } });
       });
       return { turn: { ...turn, items: [] } };
+    }
+    if (method === 'turn/steer') {
+      const turn = host.thread.turns.at(-1);
+      assert.equal(turn.id, p.expectedTurnId); assert.equal(turn.status, 'inProgress');
+      const item = { type: 'userMessage', id: randomUUID(), clientId: p.clientUserMessageId, content: structuredClone(p.input) };
+      turn.items.push(item);
+      await bridge.nativeNotification('item/completed', { threadId: p.threadId, turnId: turn.id, item });
+      return { turnId: turn.id };
     }
     return {};
   } };
@@ -70,6 +80,7 @@ export function fixture(configuredProvider = 'openai') {
       const stream = (async function* () {
         yield { type: 'system', session_id: args.record.claudeSessionId ?? randomUUID() };
         if (controls.query) await controls.query(args);
+        if (controls.messages) { yield* controls.messages(args); return; }
         yield { type: 'assistant', message: { id: randomUUID(), content: [{ type: 'text', text: 'CLAUDE RESULT' }] } };
         yield { type: 'result', subtype: 'success' };
       })(); stream.close = () => {}; return stream;

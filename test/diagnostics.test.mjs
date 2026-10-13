@@ -17,6 +17,25 @@ const temp = () => mkdtempSync(join(tmpdir(), 'bridge-diagnostic-'));
 const root = fileURLToPath(new URL('../', import.meta.url));
 const secret = 'PRIVATE-prompt-token-email@example.test';
 
+test('steering logs correlate expected turn IDs and expose receipt counts without input content', async () => {
+  const state = temp(), log = createLogger(join(state, 'logs')), id = randomUUID(), turn = randomUUID();
+  const a = new PassThrough(), b = new PassThrough();
+  const client = new Peer(a, b, { name: 'desktop', log });
+  const server = new Peer(b, a, { request: async () => ({ turnId: turn }) });
+  try {
+    await client.request('turn/steer', { threadId: id, expectedTurnId: turn, input: [{ type: 'text', text: secret }] });
+    log('steer.delivered', { threadId: id, turnId: turn, input: secret });
+    mkdirSync(join(state, 'threads'));
+    writeFileSync(join(state, 'threads', `${id}.json`), JSON.stringify({ thread: { id }, neutralNativeSeed: true,
+      turns: [{ id: turn, status: 'completed', steering: [{ input: secret, status: 'delivered' }, { input: secret, status: 'uncertain' }] }] }));
+    const report = diagnose(state, { thread: id, isAlive: () => false });
+    assert.deepEqual(report.threads[0].steering, { accepted: 0, delivered: 1, uncertain: 1 });
+    assert.equal(readLogs(state).entries.find(e => e.method === 'turn/steer').turnId, turn);
+    assert.equal(JSON.stringify(report).includes(secret), false);
+    assert.equal(errorMetadata({ code: -32601, message: 'interrupt' }).errorCategory, 'unsupported_method');
+  } finally { client.end(); server.end(); rmSync(state, { recursive: true, force: true }); }
+});
+
 test('session coordination logs are discoverable from both caller and destination without message payloads', () => {
   const state = temp(), log = createLogger(join(state, 'logs')), caller = randomUUID(), target = randomUUID();
   try {

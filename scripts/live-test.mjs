@@ -14,7 +14,7 @@ import { errorMetadata } from '../logging.mjs';
 const { values } = parseArgs({ options: { run: { type: 'boolean' }, 'copy-codex-auth': { type: 'boolean' }, scenario: { type: 'string' }, app: { type: 'string' }, source: { type: 'string' }, report: { type: 'string' } } });
 if (!values.run) throw new Error('This test consumes Claude and Codex quota. Pass --run to authorize synthetic test turns.');
 if (!values['copy-codex-auth']) throw new Error('Live GPT checks copy Codex auth.json to disposable private state. Pass --copy-codex-auth to opt in; compatibility checks need no auth copy.');
-if (values.scenario && values.scenario !== 'native') throw new Error('Unknown scenario');
+if (values.scenario && !['native', 'steering'].includes(values.scenario)) throw new Error('Unknown scenario');
 const root = mkdtempSync(join(tmpdir(), 'bridge-live-')), source = join(root, 'source'), state = join(root, 'state');
 mkdirSync(source, { mode: 0o700 });
 writeFileSync(join(source, 'config.toml'), 'model_provider = "openai"\n', { mode: 0o600 });
@@ -25,6 +25,8 @@ if (existsSync(auth)) {
 }
 const report = { checkedAt: new Date().toISOString(), checks: [], modelCalls: 0, guiVerified: false };
 let child, peer, exited, events, waiters, allSessionIds = new Set();
+const toolGates = new Map();
+const deferred = () => { let resolve; const promise = new Promise(r => resolve = r); return { promise, resolve }; };
 const expect = (name, value) => { assert.ok(value, name); report.checks.push(name); console.log(`PASS ${name}`); };
 function waitFor(predicate) {
   const old = events.find(predicate); if (old) return Promise.resolve(old);
@@ -39,7 +41,14 @@ async function connect() {
     '--app', values.app ?? '/Applications/ChatGPT.app'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, BRIDGE_MIRROR: '0' } });
   child.stderr.resume(); exited = new Promise(resolve => { child.once('exit', resolve); child.once('error', resolve); });
   peer = new Peer(child.stdout, child.stdin, {
-    request: async () => { throw new Error('This test cannot approve tools or access the desktop'); },
+    request: async (method, params) => {
+      const gate = toolGates.get(params.threadId);
+      if (method === 'item/tool/call' && params.tool === 'steering_gate' && gate) {
+        gate.entered.resolve(); await gate.release.promise;
+        return { success: true, contentItems: [{ type: 'inputText', text: 'Synthetic gate released. Follow the latest user instruction.' }] };
+      }
+      throw new Error('This test cannot approve tools or access the desktop');
+    },
     notify: (method, params) => {
       const event = { method, params }; events.push(event);
       for (const w of waiters) if (w.predicate(event)) { clearTimeout(w.timer); waiters.delete(w); w.resolve(event); }
@@ -72,6 +81,50 @@ try {
   const catalog = (await peer.request('model/list', {})).data;
   const gpt = catalog.find(m => m.model === 'gpt-6-luna') ?? catalog.find(m => !/^(claude|opus|sonnet|haiku)/.test(m.model));
   assert.ok(gpt);
+  if (values.scenario === 'steering') {
+    report.steeringSubmissions = 0;
+    const cases = [];
+    for (const model of ['sonnet', gpt.model]) {
+      const threadId = (await peer.request('thread/start', { ...options, dynamicTools: [
+        { type: 'function', name: 'steering_gate', description: 'Synthetic test gate. Call once when instructed.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+      ] })).thread.id;
+      const gate = { entered: deferred(), release: deferred() }; toolGates.set(threadId, gate);
+      const marker = `LATEST_${randomUUID()}`;
+      report.modelCalls++;
+      const started = await peer.request('turn/start', { threadId, model, effort: 'low', clientUserMessageId: randomUUID(),
+        input: input('Find and call steering_gate once. It is the only tool to use. After it returns, reply INITIAL unless a later user instruction changes that reply.') });
+      let timer;
+      try {
+        await Promise.race([gate.entered.promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Live steering gate timed out')), 60000); })]);
+        const first = { threadId, expectedTurnId: started.turn.id, clientUserMessageId: randomUUID(), input: input('Change the final reply to INTERMEDIATE. Do not call any more tools.') };
+        const queued = (await peer.request('thread/queue/add', { threadId, clientUserMessageId: randomUUID(), input: input(`Change the final reply to ${marker}. This latest instruction supersedes INTERMEDIATE. Do not call any more tools.`) })).queuedSubmission;
+        const steered = await peer.request('turn/steer', first); report.steeringSubmissions++;
+        const promoted = await peer.request('thread/queue/start', { threadId, queuedSubmissionId: queued.id }); report.steeringSubmissions++;
+        expect(`${model}_steers_same_turn`, steered.turnId === started.turn.id && promoted.turn.id === started.turn.id);
+        expect(`${model}_queue_promoted_once`, (await peer.request('thread/queue/list', { threadId })).data.length === 0);
+        await assert.rejects(peer.request('turn/steer', { ...first, expectedTurnId: randomUUID() }));
+        gate.release.resolve();
+        const completed = await waitFor(e => e.method === 'turn/completed' && e.params.turn.id === started.turn.id);
+        if (completed.params.turn.status !== 'completed') report.failedTurn = completed.params.turn;
+        expect(`${model}_turn_completes`, completed.params.turn.status === 'completed');
+        const view = (await peer.request('thread/read', { threadId, includeTurns: true })).thread;
+        const turn = view.turns[0], reply = turn.items.filter(i => i.type === 'agentMessage').at(-1)?.text ?? '';
+        expect(`${model}_latest_instruction_used`, reply.includes(marker));
+        expect(`${model}_all_inputs_retained`, view.turns.length === 1 && turn.items.filter(i => i.type === 'userMessage').length === 3);
+        expect(`${model}_single_lifecycle`, events.filter(e => e.method === 'turn/completed' && e.params.turn.id === started.turn.id).length === 1);
+        cases.push({ threadId, first, queued, turnId: started.turn.id, marker, model });
+      } finally { clearTimeout(timer); gate.release.resolve(); }
+    }
+    await disconnect(); await connect();
+    for (const c of cases) {
+      await peer.request('thread/resume', { threadId: c.threadId, excludeTurns: true });
+      const a = await peer.request('turn/steer', c.first);
+      const b = await peer.request('thread/queue/start', { threadId: c.threadId, queuedSubmissionId: c.queued.id });
+      expect(`${c.model}_retry_after_restart`, a.turnId === c.turnId && b.turn.id === c.turnId);
+      const recall = await send(c.threadId, 'Return only the exact LATEST_ code from my most recent steering instruction. Use no tools.', { effort: 'low' });
+      expect(`${c.model}_steering_memory_after_restart`, recall.text.includes(c.marker));
+    }
+  } else {
   const code = `MEMORY_${randomUUID()}`;
   if (values.scenario !== 'native') {
   const ephemeral = (await peer.request('thread/start', { ...options, ephemeral: true })).thread.id;
@@ -107,10 +160,12 @@ try {
   await peer.request('thread/resume', { threadId: target, excludeTurns: true });
   const restored = await send(target, 'Return only the remembered code. Do not use tools.', { effort: 'low' });
   expect('persisted_continuity_after_restart', restored.text.trim() === code);
+  }
   report.passed = true;
 } catch (error) {
   report.passed = false; Object.assign(report, errorMetadata(error)); console.error('Live test failed:', report.errorCategory); process.exitCode = 1;
 } finally {
+  for (const gate of toolGates.values()) gate.release.resolve();
   await disconnect();
   const directory = join(state, 'threads');
   for (const name of existsSync(directory) ? readdirSync(directory) : []) {

@@ -1,6 +1,6 @@
 {
   "name": "codex-claude-bridge-local",
-  "version": "0.3.0-rc.4",
+  "version": "0.3.0-rc.5",
   "private": true,
   "type": "module",
   "description": "Model Bridge — Claude models beneath the unmodified Codex desktop UI",
@@ -21,6 +21,7 @@
     "native-turns.mjs",
     "providers.mjs",
     "queue.mjs",
+    "steering.mjs",
     "rpc.mjs",
     "sessions.mjs",
     "launch.py",

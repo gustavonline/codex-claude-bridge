@@ -8,7 +8,10 @@ export const logContext = new AsyncLocalStorage();
 // Never serialize requests, results, prompts, commands, environment or raw errors.
 export function errorMetadata(error) {
   const message = String(error?.message ?? error ?? '');
-  const category = /previous_response_id|previous response.*not found/i.test(message) ? 'response_cache'
+  const category = error?.code === -32601 ? 'unsupported_method'
+    : /steering.*uncertain|steering.*confirmed/i.test(message) ? 'steering_delivery'
+    : /no longer active|no longer accepting|different message or turn/i.test(message) ? 'stale_turn'
+    : /previous_response_id|previous response.*not found/i.test(message) ? 'response_cache'
     : /environment variable.*(?:missing|not set)|missing.*environment variable/i.test(message) ? 'provider_environment'
     : /no rollout found/i.test(message) ? 'rollout_not_found'
     : /code.signing.identity/i.test(message) ? 'code_signing'
@@ -81,7 +84,7 @@ export function createLogger(directory, { maxBytes = 1024 * 1024, runtimePath } 
       if (event === 'turn.finished' && active.get(safe.threadId) === safe.turnId) { active.delete(safe.threadId); changed = true; }
       if (event === 'turn.preparing') { preparing.add(safe.threadId); changed = true; }
       if (event === 'turn.prepared') { preparing.delete(safe.threadId); changed = true; }
-      if (safe.direction === 'inbound' && ['turn/start', 'thread/queue/start'].includes(safe.method)) {
+      if (safe.direction === 'inbound' && ['turn/start', 'turn/steer', 'thread/queue/start'].includes(safe.method)) {
         const key = `${safe.peer}:${safe.rpcId}`;
         if (event === 'rpc.start') { starting.set(key, safe.threadId); changed = true; }
         if (event === 'rpc.finish') { starting.delete(key); changed = true; }
