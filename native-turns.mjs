@@ -2,6 +2,7 @@ import { acceptQueued, continueQueue } from './queue.mjs';
 import { handoffContext } from './providers.mjs';
 import { errorMetadata } from './logging.mjs';
 import { settleSteering } from './steering.mjs';
+import { randomUUID } from 'node:crypto';
 
 // Keep the actual native thread ID: desktop tools still belong to this chat.
 // Before handing a mixed conversation back to GPT, remove its old native turns
@@ -30,6 +31,9 @@ export async function resetNativeHistory(bridge, record) {
 
 export async function beginNative(bridge, record, params) {
   await resetNativeHistory(bridge, record);
+  // The public client ID is optional. Give our provisional item and the native
+  // host the same identity even when the caller supplies none.
+  params = { ...params, clientUserMessageId: params.clientUserMessageId ?? randomUUID() };
   const threadId = record.thread.id;
   const context = record.nativeResetRequired ? handoffContext(record.turns, params.additionalContext) : params.additionalContext;
   if (record.nativeHistoryHasLegacySeeds && !record.legacyHistoryNoticeShown) {

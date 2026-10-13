@@ -144,6 +144,22 @@ test('managed native steering preserves every canonical user message and forward
   } finally { gate.resolve(); f.close(); }
 });
 
+test('D1 optional native client IDs never duplicate the opening message, including after restart and handoff', async () => {
+  for (const clientUserMessageId of [undefined, null]) {
+    const f = fixture();
+    try {
+      const id = await f.start();
+      const { turn } = await f.bridge.request('turn/start', { threadId: id, model: 'gpt-test', input: text('UNIQUE_OPENING'), clientUserMessageId });
+      await f.done(turn.id);
+      assert.deepEqual(users(f.bridge.records.get(id).turns[0]), [text('UNIQUE_OPENING')]);
+      f.restart();
+      assert.deepEqual(users(f.bridge.records.get(id).turns[0]), [text('UNIQUE_OPENING')]);
+      const next = await f.send(id, 'handoff', { model: 'haiku' }); await f.done(next.turn.id);
+      assert.equal(f.queries.at(-1).additionalContext.bridge_conversation.value.split('UNIQUE_OPENING').length - 1, 1);
+    } finally { f.close(); }
+  }
+});
+
 for (const uncertain of [false, true]) test(`native steering ${uncertain ? 'uncertain transport' : 'explicit rejection'} preserves retry safety`, async () => {
   const f = fixture(), gate = deferred(), entered = deferred(), dispatch = deferred(), release = deferred();
   try {
