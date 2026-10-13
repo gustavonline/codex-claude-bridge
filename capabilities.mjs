@@ -211,7 +211,7 @@ export function search(catalog, query, limit = 5) {
 const schema = (properties, required) => ({ type: 'object', properties, required, additionalProperties: false });
 const querySchema = schema({ query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 8 } }, ['query']);
 
-export function makeTools({ native, desktop, record, turn, item, signal }) {
+export function makeTools({ native, desktop, record, turn, item, signal, archiveSelf }) {
   const host = native;
   native = { request: (method, params, timeout) => host.request(method, params, timeout, signal) };
   const server = new McpServer({ name: 'codex', version: '0.1.0' }, { capabilities: { tools: {} } });
@@ -288,7 +288,18 @@ export function makeTools({ native, desktop, record, turn, item, signal }) {
           if (!(await discover(native, record)).some(t => t.name === entry.name)) throw new Error('This tool was disabled while approval was pending');
         }
         signal.throwIfAborted();
-        if (entry.route.dynamic) {
+        const selfArchive = archiveSelf && entry.route.server === 'codex_app' && entry.route.tool === 'set_thread_archived'
+          && args.arguments.archived === true && (args.arguments.threadId == null || args.arguments.threadId === record.thread.id)
+          && (args.arguments.hostId == null || args.arguments.hostId === 'local')
+          && (args.arguments.source == null || args.arguments.source === 'codex')
+          && Object.keys(args.arguments).every(k => ['archived', 'threadId', 'hostId', 'source'].includes(k));
+        if (selfArchive) {
+          // Native archive shuts down this thread's MCP host before its tool
+          // response arrives. Use the same public lifecycle directly, after
+          // discovery and approval, and acknowledge only its successful reply.
+          await archiveSelf();
+          result = asText({ threadId: record.thread.id, archived: true });
+        } else if (entry.route.dynamic) {
           result = dynamicContent(await desktop.request('item/tool/call', {
             threadId: record.thread.id, turnId: turn.id, callId: id, namespace: entry.route.namespace,
             tool: entry.route.tool, arguments: args.arguments,

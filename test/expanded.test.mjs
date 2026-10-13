@@ -275,7 +275,7 @@ test('self-archive during a tool call preserves the final turn and pauses the pa
     f.controls.query = async () => { entered.resolve(); await release.promise; await f.bridge.request('thread/archive', { threadId: id }); };
     current = await f.send(id, 'archive this chat'); await entered.promise;
     const q = (await f.bridge.request('thread/queue/add', { threadId: id, clientUserMessageId: randomUUID(), input: text('wait for me') })).queuedSubmission;
-    release.resolve(); await f.done(current.turn.id);
+    release.resolve(); await f.settled(current.turn.id);
     assert.equal(f.bridge.records.get(id).archived, true);
     assert.equal(f.bridge.records.get(id).turns.at(-1).status, 'completed');
     await new Promise(r => setTimeout(r, 20));
@@ -286,7 +286,7 @@ test('self-archive during a tool call preserves the final turn and pauses the pa
     await f.bridge.request('thread/unarchive', { threadId: id });
     assert.equal(f.bridge.records.get(id).archived, false);
     assert.equal(f.bridge.records.get(id).queue[0].id, q.id);
-  } finally { release.resolve(); if (current) await f.done(current.turn.id); f.close(); }
+  } finally { release.resolve(); if (current) await f.settled(current.turn.id); f.close(); }
 });
 
 test('archiving across completion pauses on success and restores queue progress on native failure', async () => {
@@ -328,11 +328,11 @@ test('a first active turn forks an empty independent prefix and native archive e
     assert.equal(f.bridge.records.get(fork.thread.id).claudeSessionId, undefined);
     await f.bridge.nativeNotification('thread/archived', { threadId: id });
     assert.equal(f.bridge.records.get(id).archived, true);
-    hold.resolve(); await f.done(current.turn.id); f.restart();
+    hold.resolve(); await f.settled(current.turn.id); f.restart();
     assert.equal(f.bridge.records.get(id).archived, true);
     await f.bridge.nativeNotification('thread/unarchived', { threadId: id });
     assert.equal(f.bridge.records.get(id).archived, false);
-  } finally { hold.resolve(); if (current) await f.done(current.turn.id); f.close(); }
+  } finally { hold.resolve(); if (current) await f.settled(current.turn.id); f.close(); }
 });
 
 test('handoff excludes private reasoning, keeps tool results as untrusted data and leaves application context distinct', () => {

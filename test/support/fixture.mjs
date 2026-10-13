@@ -95,6 +95,14 @@ export function fixture(configuredProvider = 'openai') {
       throw new Error('Expected event not observed');
     },
     done: id => f.wait(e => e.method === 'turn/completed' && e.params.turn.id === id),
+    async settled(turnId) {
+      for (let i = 0; i < 200; i++) {
+        const record = [...bridge.records.values()].find(r => r.turns.some(t => t.id === turnId));
+        if (record && !bridge.active.has(record.thread.id) && record.turns.find(t => t.id === turnId).status !== 'inProgress') return;
+        await new Promise(r => setTimeout(r, 5));
+      }
+      throw new Error('Turn did not settle');
+    },
     restart: () => { bridge = build(); },
     close: () => rmSync(statePath, { recursive: true, force: true }),
   }; return f;
