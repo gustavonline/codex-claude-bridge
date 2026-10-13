@@ -80,6 +80,18 @@ async function send(threadId, text, overrides = {}) {
   const turn = view.thread.turns.find(t => t.id === r.turn.id);
   return { turn, submission, text: turn.items.filter(i => i.type === 'agentMessage').at(-1)?.text ?? '' };
 }
+async function settledArchivedTurn(threadId, turnId) {
+  // An archived desktop no longer receives streaming completion notifications.
+  // Observe the retained lifecycle via its public read endpoint instead.
+  const deadline = Date.now() + 90000;
+  while (Date.now() < deadline) {
+    const { thread } = await peer.request('thread/read', { threadId, includeTurns: true });
+    const turn = thread.turns.find(t => t.id === turnId);
+    if (thread.status.type !== 'active' && turn && turn.status !== 'inProgress') return turn;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  throw new Error('Archived turn did not settle');
+}
 const options = { cwd: root, model: 'sonnet', sandbox: 'read-only', approvalPolicy: 'never',
   developerInstructions: 'Synthetic bridge integration test. Use only this conversation and the requested bridge session tools. Never read personal context, files or external tools.' };
 try {
@@ -112,12 +124,12 @@ try {
         expect(`${model}_partial_turn_fork_rejected`, true);
         const queued = (await peer.request('thread/queue/add', { threadId, clientUserMessageId: randomUUID(), input: input('This queued input must remain paused after archive.') })).queuedSubmission;
         gate.release.resolve();
-        const completed = await waitFor(e => e.method === 'turn/completed' && e.params.turn.id === started.turn.id);
         // Native archive can interrupt GPT before the archive RPC responds.
         // Completion alone is not evidence that the enclosing tool has returned.
         await gate.archiveFinished.promise;
+        const completed = await settledArchivedTurn(threadId, started.turn.id);
         expect(`${model}_self_archive_acknowledged`, gate.archived === true);
-        expect(`${model}_self_archive_turn_terminal`, model === 'sonnet' ? completed.params.turn.status === 'completed' : ['completed', 'interrupted'].includes(completed.params.turn.status));
+        expect(`${model}_self_archive_turn_terminal`, model === 'sonnet' ? completed.status === 'completed' : ['completed', 'interrupted'].includes(completed.status));
         const saved = JSON.parse(readFileSync(join(state, 'threads', `${threadId}.json`), 'utf8'));
         expect(`${model}_archive_and_history_persisted`, saved.archived === true && saved.turns.length === 2);
         expect(`${model}_archive_pauses_queue`, (await peer.request('thread/queue/list', { threadId })).data[0]?.id === queued.id);

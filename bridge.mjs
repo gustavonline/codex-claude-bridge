@@ -158,7 +158,14 @@ export class Bridge {
       status: this.active.has(record.thread.id) ? { type: 'active', activeFlags: [] } : { type: 'idle' },
       turns: withTurns ? record.turns.map(publicTurn) : [] };
   }
-  emit(method, params) { this.desktop.notify(method, params); this.sessionEvents.emit('change', method, params); }
+  emit(method, params) {
+    // Archive removes the desktop's subscription while a Claude turn can still
+    // finish. Retain its history and internal lifecycle without sending items
+    // to a conversation the renderer no longer owns. Unarchive resumes delivery.
+    if (!this.records.get(params.threadId)?.archived || !(method.startsWith('item/') || method.startsWith('turn/') || method === 'thread/status/changed'))
+      this.desktop.notify(method, params);
+    this.sessionEvents.emit('change', method, params);
+  }
   async toolRequest(method, params, timeout, signal) {
     if (method !== 'item/tool/call' || params.namespace !== sessionNamespace)
       return this.desktop.request(method, params, timeout, signal);
@@ -355,9 +362,17 @@ export class Bridge {
       if (method === 'turn/steer') return steerTurn(this, record, params);
       if (method === 'thread/settings/update') return this.exclusive(record, async () => {
         this.checkWorkspace(record, params);
+        // The current public protocol ignores these deprecated fields, but the
+        // desktop still includes multiAgentMode when changing native models.
+        const ignored = new Set(['multiAgentMode', 'personality']);
         const supported = new Set(['threadId', 'cwd', 'model', 'effort', 'collaborationMode', 'permissions', 'sandboxPolicy', 'approvalPolicy', 'approvalsReviewer', 'disabledPluginIds']);
-        for (const [key, value] of Object.entries(params)) if (value != null && !supported.has(key))
-          throw new RpcError(`${key} is not supported in Claude thread settings`, -32602);
+        for (const [key, value] of Object.entries(params)) if (value != null) {
+          if (ignored.has(key)) this.log('settings.ignored', { threadId: params.threadId, reason: key });
+          else if (!supported.has(key)) {
+            this.log('settings.unsupported', { threadId: params.threadId, reason: 'unsupported_field' });
+            throw new RpcError(`${key} is not supported in Claude thread settings`, -32602);
+          }
+        }
         const selection = await this.selection(record, params);
         if (selection.provider === 'native') await reloadNativeHost(this, record, selection.model);
         await this.ensureLoaded(record);
@@ -524,6 +539,7 @@ export class Bridge {
       this.log('turn.replayed', { threadId: record.thread.id, turnId: previous.id });
       return { turn: envelope(previous) };
     }
+    if (record.archived) throw new RpcError('Unarchive this chat before starting another turn.', -32602);
     if (this.changing.has(record.thread.id) || this.reverting.has(record.thread.id) || this.pendingSteers.has(record.thread.id)) throw new RpcError('Wait for the current chat change to finish');
     if (this.active.has(record.thread.id) || this.starting.has(record.thread.id)) throw new RpcError('A turn is already running. Queue the message or interrupt before starting another.', -32602);
     this.starting.add(record.thread.id);
@@ -602,7 +618,8 @@ export class Bridge {
       this.log('context.prepared', { threadId, turnId: turn.id, instructionCharacters: systemPrompt.length,
         contextOverrideCount: Object.keys(record.options.config ?? {}).length, dynamicToolCount: record.options.dynamicTools?.length ?? 0 });
       controller.signal.throwIfAborted();
-      const mcp = makeTools({ native: this.native, desktop: { request: (...args) => this.toolRequest(...args) }, record, turn, item, signal: controller.signal });
+      const mcp = makeTools({ native: this.native, desktop: { request: (...args) => this.toolRequest(...args) }, record, turn, item, signal: controller.signal,
+        archiveSelf: () => this.request('thread/archive', { threadId }) });
       running.mcp = mcp;
       stage = 'claude_query';
       const query = this.runQuery({ record, input: params.input, additionalContext: params.additionalContext,
