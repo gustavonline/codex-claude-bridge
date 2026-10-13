@@ -542,6 +542,8 @@ export class Bridge {
       if (running.finished) return;
       if (phase === 'started') { turn.items.push(value); openItems.set(value.id, value); }
       else if (!openItems.delete(value.id)) return;
+      // Persist before dispatch so crash recovery can report an uncertain action.
+      if (phase === 'started' && value.type === 'mcpToolCall') this.save(record);
       if (phase === 'started' && value.type === 'mcpToolCall') this.log('tool.started', { threadId, turnId: turn.id, server: value.server, tool: value.tool });
       if (phase === 'completed' && value.type === 'mcpToolCall') this.log('tool.finished', {
         threadId, turnId: turn.id, server: value.server, tool: value.tool, status: value.status, durationMs: value.durationMs,

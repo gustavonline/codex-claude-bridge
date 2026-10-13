@@ -1,15 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { makeTools } from '../capabilities.mjs';
 import { sessionCall } from '../sessions.mjs';
 import { fixture } from './support/fixture.mjs';
+import { Bridge } from '../bridge.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const manage = (f, caller, args, signal) => sessionCall(f.bridge,
@@ -209,4 +210,49 @@ test('F7 a concurrent edit during session loading cannot restore the old transcr
     assert.equal(JSON.parse(readFileSync(join(f.statePath, `${target}.json`), 'utf8')).turns.length, 1);
     f.restart(); assert.equal(f.bridge.records.get(target).turns.length, 1);
   } finally { release.resolve(); f.close(); }
+});
+
+test('N1 killing the process during a dispatched tool preserves uncertainty without replaying the action or queue', async () => {
+  const killed = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import { fixture } from ${JSON.stringify(new URL('./support/fixture.mjs', import.meta.url).href)};
+    import { Client } from ${JSON.stringify(import.meta.resolve('@modelcontextprotocol/sdk/client/index.js'))};
+    import { InMemoryTransport } from ${JSON.stringify(import.meta.resolve('@modelcontextprotocol/sdk/inMemory.js'))};
+    import { writeFileSync, writeSync } from 'node:fs';
+    import { join } from 'node:path';
+    const f = fixture(), id = await f.start();
+    writeSync(1, JSON.stringify({ statePath: f.statePath, id }));
+    f.controls.native = async method => {
+      if (method === 'command/exec') {
+        writeFileSync(join(f.statePath, 'synthetic-dispatch'), 'once');
+        process.kill(process.pid, 'SIGKILL');
+        await new Promise(() => {});
+      }
+    };
+    f.controls.query = async ({ mcp }) => {
+      const client = new Client({ name: 'crash-test', version: '1' });
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      await Promise.all([mcp.instance.connect(a), client.connect(b)]);
+      await client.callTool({ name: 'shell', arguments: { command: 'synthetic action' } });
+    };
+    await f.send(id);
+    await f.bridge.request('thread/queue/add', { threadId: id,
+      clientUserMessageId: 'queued-after-crash', input: [{ type: 'text', text: 'must stay queued' }] });
+  `], { encoding: 'utf8', timeout: 10000 });
+  const { statePath, id } = JSON.parse(killed.stdout);
+  try {
+    assert.equal(killed.signal, 'SIGKILL', killed.stderr);
+    assert.equal(readFileSync(join(statePath, 'synthetic-dispatch'), 'utf8'), 'once');
+    const dispatches = [];
+    const restored = new Bridge({ statePath,
+      native: { request: async method => { dispatches.push(method); throw new Error('Recovery must not dispatch'); } },
+      desktop: { notify() {} }, runQuery: () => { throw new Error('Recovery must not resume'); } });
+    const saved = JSON.parse(readFileSync(join(statePath, `${id}.json`), 'utf8'));
+    assert.equal(saved.turns[0].status, 'interrupted');
+    const tool = saved.turns[0].items.find(i => i.type === 'mcpToolCall');
+    assert.ok(tool, 'dispatched tool must survive a process crash');
+    assert.equal(tool.status, 'failed');
+    assert.match(tool.error.message, /may already have run/);
+    assert.equal(saved.queue.length, 1);
+    assert.equal(restored.active.size, 0); assert.deepEqual(dispatches, []);
+  } finally { rmSync(statePath, { recursive: true, force: true }); }
 });

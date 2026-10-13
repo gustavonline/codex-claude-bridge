@@ -15,6 +15,8 @@ Doctor writes a private metadata report with run/thread/trace IDs, pending calls
 
 If a process stops during an external action, inspect its real destination before retrying. A tool may have completed after the caller lost its result. A failed/interrupt turn pauses its queue. A corrupt chat file stops state loading and reports the failure; preserve it for recovery rather than deleting it to make startup appear healthy.
 
+A session-tool fork can conservatively report an uncertain receipt even when model selection or history preparation failed before native dispatch. Inspect the session list and the original error before using a new request ID; the receipt is not proof that a child exists. The bridge does not automatically repeat the fork.
+
 ## Upgrade and recover
 
 Run the versioned installer from a downloaded release or built bundle. It verifies the npm archive checksum, stages dependencies, runs compatibility checks, and only then stops an idle installation and replaces it. The previous package remains at `~/.local/share/codex-claude-bridge.previous`. It preserves source configuration, profile and conversations. It refuses concurrent installation and busy shutdown. Do not update from the bridge chat that is actively running the installer.
