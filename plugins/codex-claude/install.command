@@ -23,8 +23,12 @@ bridge_success=0
 cleanup() {
   bridge_exit=$?
   if [ "$bridge_replaced" = 1 ] && [ "$bridge_success" != 1 ]; then
-    rm -rf "$bridge_install_dir"
-    if [ "$bridge_had_previous" = 1 ]; then mv "$bridge_backup" "$bridge_install_dir"; fi
+    if [ "$bridge_had_previous" = 1 ] && [ -d "$bridge_backup" ]; then
+      rm -rf "$bridge_install_dir"
+      mv "$bridge_backup" "$bridge_install_dir"
+    elif [ "$bridge_had_previous" = 0 ]; then
+      rm -rf "$bridge_install_dir"
+    fi
     echo 'Installation did not finish. The previous package was restored where available; profile data was preserved.' >&2
   fi
   rm -rf "$bridge_stage"
@@ -36,6 +40,9 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 if [ -f "$bridge_bundle_dir/$bridge_asset" ]; then
   cp "$bridge_bundle_dir/$bridge_asset" "$bridge_stage/runtime.tgz"
+elif command -v gh >/dev/null 2>&1 && gh release download "v$bridge_version" --repo gustavonline/codex-claude-bridge --pattern "$bridge_asset" --output "$bridge_stage/runtime.tgz"; then
+  # GitHub owns repository authentication, including access to private previews.
+  :
 else
   curl --proto '=https' --tlsv1.2 -fLSs "https://github.com/gustavonline/codex-claude-bridge/releases/download/v$bridge_version/$bridge_asset" -o "$bridge_stage/runtime.tgz"
 fi
@@ -65,8 +72,11 @@ if [ -x "$bridge_command" ]; then "$bridge_command" stop; fi
 if [ -e "$bridge_install_dir" ]; then
   [ ! -L "$bridge_install_dir" ] || { echo 'Installation directory is a symlink; left unchanged.' >&2; exit 1; }
   rm -rf "$bridge_backup"
-  mv "$bridge_install_dir" "$bridge_backup"
   bridge_had_previous=1
+  # Mark before the first rename. Recovery inspects whether the rename actually
+  # happened, including a TERM delivered immediately after mv returns.
+  bridge_replaced=1
+  mv "$bridge_install_dir" "$bridge_backup"
 fi
 bridge_replaced=1
 mv "$bridge_stage/package" "$bridge_install_dir"
