@@ -32,9 +32,12 @@ npm ci --ignore-scripts --omit=optional
 npm run check
 npm run bundle -- --pin
 npm run bundle -- --check
+npm run test:distribution
 ```
 
-`dist/` contains the npm tarball, a standalone installer ZIP, a plugin ZIP with that exact tarball, and SHA-256 checksums. `--pin` updates the source plugin's `bundle.json` so a source marketplace installation downloads only the exact release archive. When available, the installer uses the existing GitHub CLI login for private release access; bundled ZIPs need no separate GitHub download. Pin after final runtime/doc edits; commit the pin. `--check` rejects stale integrity metadata. Both bundles are generated from the same installer and plugin source.
+`dist/` contains the npm tarball, a standalone installer ZIP, a plugin ZIP with that exact tarball, and SHA-256 checksums. `--pin` updates the source plugin's `bundle.json` so a source marketplace installation downloads only the exact release archive. When available, the installer uses the existing GitHub CLI login for private release access; bundled ZIPs need no separate GitHub download. Pin after final runtime/doc edits; commit the pin. `--check` rejects stale integrity metadata. Both bundles are generated from the same installer and plugin source. `npm-shrinkwrap.json` is the single dependency lockfile and is shipped in the runtime tarball. Distribution tests install the archive offline into an empty prefix and compare every non-optional dependency version and integrity to that lock.
+
+The installer extracts the verified archive into its staging directory and runs `npm ci` against the shipped lock. Do not replace this with `npm install <tarball>`: npm can re-resolve peer dependencies when installing the bridge under another package. The distribution check runs the same staging script, checks the actual on-disk versions and npm integrity records, and invokes the resulting CLI.
 
 The source marketplace is `.agents/plugins/marketplace.json`; portable and legacy Codex plugin manifests share identity, version and presentation. There are only two skills and no plugin MCP server.
 

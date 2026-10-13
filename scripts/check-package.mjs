@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 const json = path => JSON.parse(readFileSync(path, 'utf8'));
 const pkg = json('package.json'), plugin = json('plugins/codex-claude/plugin.json'), legacy = json('plugins/codex-claude/.codex-plugin/plugin.json');
-assert.equal(pkg.version, json('package-lock.json').version);
+assert.equal(pkg.version, json('npm-shrinkwrap.json').version);
+assert.deepEqual(pkg.dependencies, json('npm-shrinkwrap.json').packages[''].dependencies);
 assert.equal(pkg.version, plugin.version); assert.equal(pkg.version, legacy.version);
 assert.equal(plugin.name, legacy.name);
 const presentation = plugin.extensions['com.openai'].interface;
@@ -21,5 +22,7 @@ for (const file of pack.files) {
 }
 for (const name of pkg.files.filter(name => name.endsWith('.mjs'))) assert.ok(pack.files.some(f => f.path === name), name);
 assert.ok(pack.files.some(f => f.path === 'LICENSE'));
+assert.ok(pack.files.some(f => f.path === 'npm-shrinkwrap.json'));
 execFileSync('sh', ['-n', 'plugins/codex-claude/install.command']);
+execFileSync('sh', ['-n', 'plugins/codex-claude/stage-runtime.sh']);
 console.log(`Package contract passed: ${pack.files.length} files; matching CLI/plugin ${pkg.version}; no local runtime state.`);

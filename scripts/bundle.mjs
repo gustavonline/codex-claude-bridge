@@ -23,6 +23,7 @@ try {
     writeFileSync(join(folder, 'bundle.json'), JSON.stringify(bundle, null, 2) + '\n');
   }
   cpSync('plugins/codex-claude/install.command', join(installer, 'Install Model Bridge.command'));
+  cpSync('plugins/codex-claude/stage-runtime.sh', join(installer, 'stage-runtime.sh'));
   cpSync('LICENSE', join(installer, 'LICENSE')); cpSync('README.md', join(installer, 'README.md'));
   const zips = [`model-bridge-plugin-${version}.zip`, `model-bridge-installer-${version}.zip`];
   // Standard-library ZIP writer gives reproducible paths, timestamps and modes.
