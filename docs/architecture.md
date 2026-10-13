@@ -36,14 +36,16 @@ This is a component/deployment boundary view, not a proposed replacement GUI. Th
 - `providers.mjs`, `native-turns.mjs`, `history.mjs` and `fork.mjs` preserve native identities and exact retained prefixes across model changes and edits. Hidden reasoning is excluded from model handoffs.
 - `capabilities.mjs` exposes five initial MCP entrypoints. Tool schemas and skills are selected lazily and configuration is rechecked before use.
 - `sessions.mjs` adds two deferred dynamic tools over the existing lifecycle. It has no socket, database or service of its own.
-- `launch.py` preserves the signed helper chain. Only `app-server` passes through the adapter; other helper commands exec the original signed CLI directly. `mirror.py` and `mirror.mjs` synchronize selected configuration, not conversation or auth data.
+- `launch.py` preserves the signed helper chain. Only `app-server` passes through the adapter; other helper commands exec the original signed CLI directly. Initial desktop preparation makes a private one-time Codex/OpenAI `auth.json` snapshot when present. Compatibility checks explicitly skip it. `mirror.py` and `mirror.mjs` subsequently synchronize selected configuration, not conversation or auth data; login refreshes are never copied back to normal Codex. Claude credentials are handled by the unchanged official Claude runtime.
 - `logging.mjs`, `diagnose.mjs` and `cli.mjs` provide private diagnostics and operation.
 
 ## Session coordination
 
 A caller can list/read/wait for bridge-managed chats in the same workspace and isolated profile, then send, queue, start a paused queue, interrupt an observed turn, or fork an idle chat. Read results are bounded and omit tool outputs unless requested; hidden reasoning is never returned. Ephemeral chats are visible only to themselves.
 
-Mutations require the same resolved sandbox, approval policy and disabled-plugin set. Sending and forking require explicit human authorization as described in the tools. Workspace separation is a scope boundary, not an OS sandbox. Tool schemas cannot grant authorization.
+Mutations require the same resolved sandbox, approval policy, permission profile, configuration overrides and disabled-plugin set. Interactive policies require an explicit desktop approval for each new management action; declined, cancelled or outdated approvals do not dispatch. An explicitly selected `never` policy delegates these actions noninteractively within that matching boundary. Accepted retries return their existing receipt without another prompt. Models are still instructed to require human intent for sending/forking; the runtime enforces the selected policy, not a semantic interpretation of natural-language authorization. Workspace separation is a scope boundary, not an OS sandbox. Model-supplied flags cannot approve an operation.
+
+Shell execution always requires a resolved sandbox. `never` and `on-request` allow execution inside it without escalation. The bridge conservatively asks before `untrusted` and `on-failure` commands because direct native `command/exec` has no agent approval handler. Unknown/granular prompt policies fail explicitly. Permission changes during approval invalidate the pending action. Native MCP-tool approval modes retain their separate configuration.
 
 Stable message IDs deduplicate sends across concurrency and restart. Fork receipts prevent a retry from duplicating a possibly completed fork after an uncertain response. A successful request acknowledges acceptance, not completion; wait/read provides the actual outcome. Cancellation releases local waits; external side effects may already have happened.
 

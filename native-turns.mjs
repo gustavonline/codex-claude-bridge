@@ -59,6 +59,9 @@ export async function captureNative(bridge, record, method, params) {
     if (pending?.input && !turn.items.some(i => i.type === 'userMessage'))
       turn.items.push({ type: 'userMessage', id: pending.clientUserMessageId ?? `${turnId}-input`, content: structuredClone(pending.input) });
     turn.clientUserMessageId = pending?.clientUserMessageId;
+    // Native canonical items may add display metadata; retries compare the
+    // exact submitted input, independently of the host's presentation shape.
+    if (pending?.input) turn.submittedInput = structuredClone(pending.input);
     const queued = pending && acceptQueued(record, pending, turn);
     record.turns.push(turn); record.nativeFirstTurnId ??= turn.id;
     record.nativeResetRequired = false; record.nativePersisted = true;

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""One-way configuration mirror. Never copies auth, history, DBs or runtimes."""
+"""Continuous configuration mirror; excludes auth, history, DBs and runtimes.
+
+The launcher's initial desktop preparation has a separate one-time auth snapshot.
+"""
 import argparse
 import fcntl
 import json

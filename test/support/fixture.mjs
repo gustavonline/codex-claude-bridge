@@ -51,7 +51,7 @@ export function fixture(configuredProvider = 'openai') {
       // Exercise notifications arriving before the RPC's response.
       await bridge.nativeNotification('turn/started', { threadId: p.threadId, turn: structuredClone(turn) });
       setImmediate(async () => {
-        turn.items.push({ type: 'userMessage', id: randomUUID(), content: structuredClone(p.input) });
+        turn.items.push({ type: 'userMessage', id: randomUUID(), content: structuredClone(controls.nativeUserInput ? controls.nativeUserInput(p.input) : p.input) });
         turn.items.push({ type: 'agentMessage', id: randomUUID(), text: 'NATIVE RESULT' });
         for (const item of turn.items) await bridge.nativeNotification('item/completed', { threadId: p.threadId, turnId: turn.id, item });
         turn.status = 'completed';

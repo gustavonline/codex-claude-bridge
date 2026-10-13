@@ -11,14 +11,18 @@ import { deleteSession } from '@anthropic-ai/claude-agent-sdk';
 import { Peer } from '../rpc.mjs';
 import { errorMetadata } from '../logging.mjs';
 
-const { values } = parseArgs({ options: { run: { type: 'boolean' }, scenario: { type: 'string' }, app: { type: 'string' }, source: { type: 'string' }, report: { type: 'string' } } });
+const { values } = parseArgs({ options: { run: { type: 'boolean' }, 'copy-codex-auth': { type: 'boolean' }, scenario: { type: 'string' }, app: { type: 'string' }, source: { type: 'string' }, report: { type: 'string' } } });
 if (!values.run) throw new Error('This test consumes Claude and Codex quota. Pass --run to authorize synthetic test turns.');
+if (!values['copy-codex-auth']) throw new Error('Live GPT checks copy Codex auth.json to disposable private state. Pass --copy-codex-auth to opt in; compatibility checks need no auth copy.');
 if (values.scenario && values.scenario !== 'native') throw new Error('Unknown scenario');
 const root = mkdtempSync(join(tmpdir(), 'bridge-live-')), source = join(root, 'source'), state = join(root, 'state');
 mkdirSync(source, { mode: 0o700 });
 writeFileSync(join(source, 'config.toml'), 'model_provider = "openai"\n', { mode: 0o600 });
 const auth = join(values.source ?? join(homedir(), '.codex'), 'auth.json');
-if (existsSync(auth)) { copyFileSync(auth, join(source, 'auth.json')); chmodSync(join(source, 'auth.json'), 0o600); }
+if (existsSync(auth)) {
+  const profile = join(state, 'codex'); mkdirSync(profile, { recursive: true, mode: 0o700 });
+  copyFileSync(auth, join(profile, 'auth.json')); chmodSync(join(profile, 'auth.json'), 0o600);
+}
 const report = { checkedAt: new Date().toISOString(), checks: [], modelCalls: 0, guiVerified: false };
 let child, peer, exited, events, waiters, allSessionIds = new Set();
 const expect = (name, value) => { assert.ok(value, name); report.checks.push(name); console.log(`PASS ${name}`); };
@@ -53,12 +57,13 @@ async function disconnect() {
 const input = text => [{ type: 'text', text }];
 async function send(threadId, text, overrides = {}) {
   report.modelCalls++;
-  const r = await peer.request('turn/start', { threadId, clientUserMessageId: randomUUID(), input: input(text), ...overrides });
+  const submission = { threadId, clientUserMessageId: randomUUID(), input: input(text), ...overrides };
+  const r = await peer.request('turn/start', submission);
   const completion = await waitFor(e => e.method === 'turn/completed' && e.params.turn.id === r.turn.id);
   if (completion.params.turn.status !== 'completed') throw new Error(completion.params.turn.error?.message ?? 'Live turn did not complete');
   const view = await peer.request('thread/read', { threadId, includeTurns: true });
   const turn = view.thread.turns.find(t => t.id === r.turn.id);
-  return { turn, text: turn.items.filter(i => i.type === 'agentMessage').at(-1)?.text ?? '' };
+  return { turn, submission, text: turn.items.filter(i => i.type === 'agentMessage').at(-1)?.text ?? '' };
 }
 const options = { cwd: root, model: 'sonnet', sandbox: 'read-only', approvalPolicy: 'never',
   developerInstructions: 'Synthetic bridge integration test. Use only this conversation and the requested bridge session tools. Never read personal context, files or external tools.' };
@@ -93,6 +98,10 @@ try {
   expect('gpt_uses_same_session_adapter', report.nativeReplyMatched && native.turn.items.some(i => i.type === 'dynamicToolCall' && i.namespace === 'codex_bridge_sessions' && i.success));
   await disconnect(); await connect();
   await peer.request('thread/resume', { threadId: caller, excludeTurns: true });
+  const retry = await peer.request('turn/start', native.submission);
+  const retryView = (await peer.request('thread/read', { threadId: caller, includeTurns: true })).thread;
+  expect('native_delivery_retry_after_restart', retry.turn.id === native.turn.id
+    && retryView.turns.at(-1).id === native.turn.id && retryView.turns.at(-1).status === 'completed');
   const resumedNative = await send(caller, `Use codex_bridge_sessions read to read ${target} again after this restart. Return only the MEMORY_ code from that thread. Do not use any other tool.`, { effort: 'low' });
   expect('native_session_tools_survive_restart', resumedNative.text.trim() === code && resumedNative.turn.items.some(i => i.type === 'dynamicToolCall' && i.namespace === 'codex_bridge_sessions' && i.success));
   await peer.request('thread/resume', { threadId: target, excludeTurns: true });

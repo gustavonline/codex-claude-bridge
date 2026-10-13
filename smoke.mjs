@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +12,7 @@ import { errorMetadata } from './logging.mjs';
 export async function compatibilityCheck(config, python, versions) {
   const state = mkdtempSync(join(tmpdir(), 'codex-claude-check-'));
   const child = spawn(python, [fileURLToPath(new URL('./launch.py', import.meta.url)), '--stdio', '--state', state,
-    '--source', config.source, '--app', config.app], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, BRIDGE_MIRROR: '0' } });
+    '--source', config.source, '--app', config.app, '--no-auth-copy'], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, BRIDGE_MIRROR: '0' } });
   let stderrBytes = 0;
   child.stderr.on('data', data => { stderrBytes += data.length; });
   const peer = new Peer(child.stdout, child.stdin, { request: async () => { throw new Error('Compatibility check cannot approve tools.'); } });
@@ -42,6 +42,7 @@ export async function compatibilityCheck(config, python, versions) {
     expect('native_to_claude_settings', view.thread?.model === claude.model);
     const queue = await peer.request('thread/queue/list', { threadId: managed.thread.id });
     expect('queue_contract', Array.isArray(queue.data));
+    expect('no_auth_copy', !existsSync(join(state, 'codex', 'auth.json')));
     return { passed: true, checkedAt: new Date().toISOString(), versions, checks, modelCalls: 0, guiVerified: false, stderrBytes };
   } catch (error) {
     return { passed: false, checkedAt: new Date().toISOString(), versions, checks, ...errorMetadata(error), modelCalls: 0, guiVerified: false, stderrBytes };

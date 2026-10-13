@@ -20,7 +20,7 @@ import { sessionCall, sessionNamespace, withSessionTools } from './sessions.mjs'
 
 const now = () => Math.floor(Date.now() / 1000);
 const clone = value => structuredClone(value);
-const publicTurn = ({ claudePromptId, claudeSessionId, claudeCheckpoint, queuedSubmissionId, provider, clientUserMessageId, ...turn }) => turn;
+const publicTurn = ({ claudePromptId, claudeSessionId, claudeCheckpoint, queuedSubmissionId, provider, clientUserMessageId, submittedInput, ...turn }) => turn;
 const envelope = turn => ({ ...publicTurn(turn), items: [], itemsView: 'notLoaded' });
 const workspacePath = path => { try { return realpathSync(path); } catch { return resolve(path); } };
 const mergeOptions = (previous, params) => {
@@ -258,6 +258,7 @@ export class Bridge {
     const result = await this.native.request('thread/resume', { ...record.options, threadId: record.thread.id,
       model: record.provider === 'native' ? record.model : record.nativeModel ?? record.model,
       modelProvider: record.hostProvider ?? record.options.modelProvider ?? 'claude_code', excludeTurns: true });
+    record = this.records.get(record.thread.id) ?? record;
     record.sandbox = result.sandbox; record.approvalPolicy = result.approvalPolicy;
     record.nativeModel = result.model ?? record.nativeModel; record.nativeEffort = result.reasoningEffort ?? record.nativeEffort;
     record.activePermissionProfile = result.activePermissionProfile;
@@ -481,7 +482,7 @@ export class Bridge {
     const previous = params.clientUserMessageId && record.turns.find(t => t.clientUserMessageId === params.clientUserMessageId
       || t.items.some(i => i.type === 'userMessage' && (i.id === params.clientUserMessageId || i.clientId === params.clientUserMessageId)));
     const pending = this.pendingStarts.get(record.thread.id);
-    const duplicate = previous?.items.find(i => i.type === 'userMessage')?.content
+    const duplicate = previous?.submittedInput ?? previous?.items.find(i => i.type === 'userMessage')?.content
       ?? (params.clientUserMessageId && pending?.params.clientUserMessageId === params.clientUserMessageId ? pending.params.input : undefined);
     if (duplicate) {
       if (!isDeepStrictEqual(duplicate, params.input)) throw new RpcError('This clientUserMessageId already belongs to a different message.', -32602);
@@ -573,7 +574,7 @@ export class Bridge {
       running.query = query;
       for await (const message of query) {
         controller.signal.throwIfAborted();
-        if (message.session_id) {
+        if (message.session_id && turn.claudeSessionId !== message.session_id) {
           if (record.claudeSessionId !== message.session_id) this.log('session.attached', { threadId, turnId: turn.id, sessionId: message.session_id });
           // An ephemeral query cannot resume this SDK id on the next turn.
           // Keep using the in-memory visible transcript as its continuation.

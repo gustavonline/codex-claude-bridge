@@ -1,9 +1,9 @@
 {
   "name": "codex-claude-bridge-local",
-  "version": "0.3.0-rc.3",
+  "version": "0.3.0-rc.4",
   "private": true,
   "type": "module",
-  "description": "Model Bridge \u2014 Claude models beneath the unmodified Codex desktop UI",
+  "description": "Model Bridge — Claude models beneath the unmodified Codex desktop UI",
   "bin": {
     "codex-claude": "cli.mjs"
   },
