@@ -33,22 +33,22 @@ test('desktop picker accepts deprecated mode fields when a Claude fork switches 
   } finally { f.close(); }
 });
 
-async function archiveTool(f, args, { disabled = false, deny = false, nativeFailure = false, cancel = false, disableAfterDiscovery = false } = {}) {
+async function archiveTool(f, args, { disabled = false, deny = false, nativeFailure = false, cancel = false, approve = false, disableAfterDiscovery = false } = {}) {
   const original = f.bridge.native.request;
   let discoveries = 0;
   f.bridge.native.request = async (method, params) => {
     if (method === 'mcpServerStatus/list') return { data: [{ name: 'codex_app', runtimeStatus: disabled || (disableAfterDiscovery && discoveries++ > 0) ? 'disabled' : 'ready',
       tools: { set_thread_archived: { name: 'set_thread_archived', description: 'Archive a chat',
         inputSchema: { type: 'object' }, annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false } } } }] };
-    if (method === 'config/read' && (deny || cancel)) return { config: { mcp_servers: { codex_app: { default_tools_approval_mode: 'prompt' } } } };
+    if (method === 'config/read' && (deny || cancel || approve)) return { config: { mcp_servers: { codex_app: { default_tools_approval_mode: 'prompt' } } } };
     if (method === 'mcpServer/tool/call') throw new Error('Synthetic MCP transport closed');
     if (method === 'thread/archive' && nativeFailure) throw new Error('Synthetic native archive rejected');
     return original(method, params);
   };
-  if (cancel) {
+  if (cancel || approve) {
     for (const record of f.bridge.records.values()) record.approvalPolicy = 'on-request';
     f.bridge.desktop.request = async (_, params) => {
-      f.bridge.active.get(params.threadId).controller.abort();
+      if (cancel) f.bridge.active.get(params.threadId).controller.abort();
       return { action: 'accept', content: { approve: true } };
     };
   }
@@ -118,4 +118,39 @@ test('cross-chat, cross-host, ChatGPT and extended archive requests keep the nat
       assert.equal(f.calls.some(c => c.method === 'thread/archive'), false);
     } finally { f.close(); }
   }
+});
+
+test('an archived chat rejects new and queued starts but acknowledges an already delivered message', async () => {
+  const f = fixture();
+  try {
+    const id = await f.start();
+    const message = { clientUserMessageId: 'retained-delivery' };
+    const first = await f.send(id, 'hello', message); await f.done(first.turn.id);
+    const queued = await f.bridge.request('thread/queue/add', { threadId: id, clientUserMessageId: 'queued-delivery', input: [{ type: 'text', text: 'queued' }] });
+    await f.bridge.request('thread/archive', { threadId: id });
+    const calls = f.calls.length, queries = f.queries.length;
+    assert.equal((await f.send(id, 'hello', message)).turn.id, first.turn.id);
+    await assert.rejects(f.send(id, 'new'), /Unarchive/);
+    await assert.rejects(f.bridge.request('thread/queue/start', { threadId: id, queuedSubmissionId: queued.queuedSubmission.id }), /Unarchive/);
+    assert.equal(f.calls.length, calls); assert.equal(f.queries.length, queries);
+    assert.equal(f.bridge.records.get(id).queue[0].id, queued.queuedSubmission.id);
+    assert.equal(f.bridge.records.get(id).turns.length, 1);
+    await f.bridge.request('thread/unarchive', { threadId: id });
+    const resumed = await f.bridge.request('thread/queue/start', { threadId: id }); await f.done(resumed.turn.id);
+    assert.equal(f.bridge.records.get(id).queue.length, 0);
+    assert.equal(f.bridge.records.get(id).turns.length, 2);
+  } finally { f.close(); }
+});
+
+test('accepted prompted self-archive completes only after the native lifecycle succeeds', async () => {
+  const f = fixture();
+  try {
+    const id = await f.start();
+    const result = await archiveTool(f, { archived: true, threadId: id, hostId: 'local', source: 'codex' }, { approve: true });
+    const sent = await f.send(id); await f.settled(sent.turn.id);
+    assert.equal(result().isError ?? false, false);
+    assert.equal(f.bridge.records.get(id).archived, true);
+    assert.equal(f.calls.filter(c => c.method === 'thread/archive').length, 1);
+    assert.equal(f.bridge.records.get(id).turns[0].items.find(i => i.tool === 'set_thread_archived').status, 'completed');
+  } finally { f.close(); }
 });

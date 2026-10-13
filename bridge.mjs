@@ -539,6 +539,7 @@ export class Bridge {
       this.log('turn.replayed', { threadId: record.thread.id, turnId: previous.id });
       return { turn: envelope(previous) };
     }
+    if (record.archived) throw new RpcError('Unarchive this chat before starting another turn.', -32602);
     if (this.changing.has(record.thread.id) || this.reverting.has(record.thread.id) || this.pendingSteers.has(record.thread.id)) throw new RpcError('Wait for the current chat change to finish');
     if (this.active.has(record.thread.id) || this.starting.has(record.thread.id)) throw new RpcError('A turn is already running. Queue the message or interrupt before starting another.', -32602);
     this.starting.add(record.thread.id);
