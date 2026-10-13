@@ -21,7 +21,7 @@ export function fixture(configuredProvider = 'openai') {
     if (method === 'config/read') return { config: { model: 'gpt-test', model_provider: configuredProvider } };
     if (method === 'model/list') return { data: [nativeModel('gpt-test'), nativeModel('gpt-other')] };
     if (method === 'thread/start') {
-      const id = randomUUID(); host = { thread: { id, cwd: p.cwd ?? statePath, ephemeral: p.ephemeral ?? false, status: { type: 'idle' }, turns: [] }, queue: [], provider: p.modelProvider ?? configuredProvider,
+      const id = randomUUID(); host = { thread: { id, path: join(statePath, `${id}.jsonl`), cwd: p.cwd ?? statePath, ephemeral: p.ephemeral ?? false, status: { type: 'idle' }, turns: [] }, queue: [], provider: p.modelProvider ?? configuredProvider,
         settings: { model: p.model ?? 'gpt-test', effort: 'low', sandboxPolicy: { type: 'readOnly' }, approvalPolicy: 'never' } };
       hosts.set(id, host); return response(host);
     }
@@ -43,6 +43,7 @@ export function fixture(configuredProvider = 'openai') {
     }
     if (method === 'thread/fork') {
       const copy = structuredClone(host); copy.thread.id = randomUUID(); copy.thread.forkedFromId = p.threadId;
+      copy.thread.path = join(statePath, `${copy.thread.id}.jsonl`);
       copy.provider = p.modelProvider; copy.settings.model = p.model; hosts.set(copy.thread.id, copy); return response(copy);
     }
     if (method === 'turn/start') {

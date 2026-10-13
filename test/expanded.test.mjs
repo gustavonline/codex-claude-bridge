@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { handoffContext } from '../providers.mjs';
 import { fixture } from './support/fixture.mjs';
 
@@ -168,6 +169,46 @@ test('public forks keep before/through/all prefixes, independent host identity a
     }
     await assert.rejects(f.bridge.request('thread/fork', { threadId: id, beforeTurnId: 'missing' }), /boundary/);
     await assert.rejects(f.bridge.request('thread/fork', { threadId: id, beforeTurnId: a.turn.id, lastTurnId: b.turn.id }), /not both/);
+  } finally { f.close(); }
+});
+
+test('desktop opens successive forks with their native path hint and retains paginated history after restart', async () => {
+  const f = fixture();
+  try {
+    let id = await f.start();
+    const first = await f.send(id, 'retained one'); await f.done(first.turn.id);
+    const second = await f.send(id, 'retained two'); await f.done(second.turn.id);
+    const expected = [first.turn.id, second.turn.id];
+    for (let n = 0; n < 3; n++) {
+      const parent = structuredClone(f.bridge.records.get(id));
+      const sourceFile = readFileSync(join(f.statePath, `${id}.json`), 'utf8');
+      const fork = (await f.bridge.request('thread/fork', { threadId: id })).thread;
+      assert.notEqual(fork.path, parent.thread.path);
+      f.controls.native = async (method, params) => {
+        if (method === 'thread/resume' && params.threadId === fork.id)
+          f.hosts.get(fork.id).thread.path = `${fork.path}.rewritten`;
+      };
+      const args = { threadId: fork.id, path: fork.path, history: null, initialTurnsPage: { limit: 5, sortDirection: 'asc' } };
+      f.restart();
+      const resumed = await f.bridge.request('thread/resume', args);
+      assert.deepEqual(resumed.initialTurnsPage.data.map(t => t.id), expected);
+      assert.equal(resumed.thread.forkedFromId, id);
+      assert.equal(resumed.thread.path, `${fork.path}.rewritten`);
+      assert.deepEqual(f.bridge.records.get(id).turns, parent.turns);
+      assert.equal(readFileSync(join(f.statePath, `${id}.json`), 'utf8'), sourceFile);
+      const native = f.calls.findLast(c => c.method === 'thread/resume').params;
+      assert.equal(native.threadId, fork.id);
+      assert.equal('path' in native || 'history' in native, false);
+      assert.equal('path' in f.bridge.records.get(fork.id).options, false);
+      const before = f.calls.length;
+      for (const override of [{ path: parent.thread.path }, ...(parent.resumePaths ?? []).map(path => ({ path })), { path: '/other-rollout' }, { history: [] }])
+        await assert.rejects(f.bridge.request('thread/resume', { ...args, ...override }), /alternative history/);
+      assert.equal(f.calls.length, before);
+      f.restart(); // The desktop's original hint must still work after a native path rewrite.
+      const full = await f.bridge.request('thread/resume', { threadId: fork.id, path: fork.path });
+      assert.deepEqual(full.thread.turns.map(t => t.id), expected);
+      id = fork.id;
+    }
   } finally { f.close(); }
 });
 

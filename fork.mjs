@@ -53,7 +53,7 @@ export async function forkThread(bridge, record, params) {
   const child = { ...structuredClone(record), ...selected, thread: { ...result.thread, forkedFromId: record.thread.id }, options,
     sandbox: result.sandbox, approvalPolicy: result.approvalPolicy, activePermissionProfile: result.activePermissionProfile,
     instructionSources: result.instructionSources ?? record.instructionSources, disabledPluginIds: result.disabledPluginIds ?? record.disabledPluginIds,
-    turns: structuredClone(record.turns.slice(0, count)), claudeSessionId, loadedTools: [], queue: [], nativeQueueMigration: [], sessionForks: {}, archived: false,
+    turns: structuredClone(record.turns.slice(0, count)), claudeSessionId, loadedTools: [], queue: [], nativeQueueMigration: [], sessionForks: {}, resumePaths: [], archived: false,
     nativeProvider: result.modelProvider ?? hostProvider, hostProvider: result.modelProvider ?? hostProvider,
     nativeModel: result.model ?? record.nativeModel, nativeEffort: result.reasoningEffort ?? record.nativeEffort,
     approvalsReviewer: result.approvalsReviewer ?? record.approvalsReviewer,

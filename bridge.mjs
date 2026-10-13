@@ -125,6 +125,10 @@ export class Bridge {
   }
   metadata(record, thread) {
     if (!thread || thread.id !== record.thread.id) return;
+    // Native may rewrite the rollout on resume/revert. A desktop can still
+    // echo a path this same thread previously advertised; it is only a hint.
+    record.resumePaths = [...new Set([...(record.resumePaths ?? []), record.thread.path, thread.path]
+      .filter(path => typeof path === 'string' && path.length > 0))];
     // Native owns project/title/workspace metadata. The bridge owns the visible
     // Claude transcript, preview and activity, never the native seed turns.
     const { turns, preview, status, model, modelProvider, reasoningEffort, updatedAt, ...metadata } = thread;
@@ -362,7 +366,12 @@ export class Bridge {
       });
       if (method === 'thread/resume') {
         this.checkWorkspace(record, params);
-        if (params.history != null || params.path) throw new RpcError('Resume Claude chats by threadId; alternative history/path is not supported.', -32602);
+        const { path, history, ...resumeParams } = params;
+        const hasPath = path != null && path !== '';
+        const matchingPath = typeof path === 'string' && (path === record.thread.path || record.resumePaths?.includes(path));
+        this.log('thread.resume_requested', { threadId: record.thread.id,
+          reason: history != null ? 'alternate_history' : hasPath ? matchingPath ? 'matching_path' : 'alternate_path' : 'thread_id' });
+        if (history != null || (hasPath && !matchingPath)) throw new RpcError('Resume Claude chats by threadId; alternative history/path is not supported.', -32602);
         if (this.active.has(params.threadId) && Object.entries(params).some(([key, value]) =>
           ['model', 'config', 'baseInstructions', 'developerInstructions', 'permissions', 'sandbox', 'approvalPolicy'].includes(key)
           && value != null && !isDeepStrictEqual(value, key === 'model' ? record.model : record.options[key])))
@@ -370,7 +379,10 @@ export class Bridge {
         return this.exclusive(record, async () => {
         const selected = await this.selection(record, params);
         const model = selected.model;
-        const options = mergeOptions(record.options, params);
+        // Desktop echoes the native rollout path when opening a fork. Accept
+        // that known identity hint, but always resume the host by threadId.
+        const options = mergeOptions(record.options, resumeParams);
+        delete options.path; delete options.history;
         if (selected.provider === 'native') await reloadNativeHost(this, record, model);
         const result = await this.native.request(method, { ...options,
           model: selected.provider === 'native' ? model : record.nativeModel ?? model,

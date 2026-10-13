@@ -104,6 +104,8 @@ try {
         await Promise.race([gate.entered.promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Live lifecycle gate timed out')), 60000); })]);
         const fork = (await peer.request('thread/fork', { threadId })).thread;
         expect(`${model}_active_fork_retains_only_finished_prefix`, fork.turns.length === 1 && fork.turns[0].id === first.turn.id && fork.id !== threadId);
+        const reopened = await peer.request('thread/resume', { threadId: fork.id, path: fork.path, initialTurnsPage: { limit: 5, sortDirection: 'asc' } });
+        expect(`${model}_fork_reopens_with_native_path`, typeof fork.path === 'string' && reopened.initialTurnsPage.data.length === 1 && reopened.initialTurnsPage.data[0].id === first.turn.id);
         const parent = (await peer.request('thread/read', { threadId, includeTurns: true })).thread;
         expect(`${model}_parent_keeps_running`, parent.status.type === 'active' && parent.turns.at(-1).id === started.turn.id);
         await assert.rejects(peer.request('thread/fork', { threadId, lastTurnId: started.turn.id }));
@@ -125,11 +127,13 @@ try {
         const childModel = model === 'sonnet' ? gpt.model : 'sonnet';
         const child = await send(fork.id, 'Reply with the remembered PREFIX code only. Do not use tools.', { model: childModel, effort: 'low' });
         expect(`${model}_fork_handoff_memory`, child.text.includes(marker));
-        cases.push({ threadId: fork.id, model: childModel, marker });
+        cases.push({ threadId: fork.id, path: fork.path, model: childModel, marker });
       } finally { clearTimeout(timer); gate.release.resolve(); toolGates.delete(threadId); }
     }
     await disconnect(); await connect();
     for (const c of cases) {
+      const reopened = await peer.request('thread/resume', { threadId: c.threadId, path: c.path, initialTurnsPage: { limit: 5, sortDirection: 'asc' } });
+      expect(`${c.model}_fork_reopens_after_restart`, reopened.initialTurnsPage.data.length === 2);
       const recall = await send(c.threadId, 'Reply with the remembered PREFIX code only. Do not use tools.', { model: c.model, effort: 'low' });
       expect(`${c.model}_fork_memory_after_restart`, recall.text.includes(c.marker));
     }
