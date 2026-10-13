@@ -87,7 +87,7 @@ test('null resume options retain context across restart; explicit empty values c
   try {
     let bridge = new Bridge({ native, desktop: {}, statePath, getModels: async () => [{ value: 'opus' }] });
     await bridge.request('thread/start', options);
-    bridge = new Bridge({ native, desktop: {}, statePath });
+    bridge = new Bridge({ native, desktop: {}, statePath, getModels: async () => [{ value: 'opus' }] });
     await bridge.request('thread/resume', { threadId: id, config: null, developerInstructions: null, sandbox: null });
     assert.equal(received.developerInstructions, options.developerInstructions);
     assert.deepEqual(received.config, options.config);

@@ -22,6 +22,8 @@ jobs:
       - name: Check tag identity
         run: node -e 'if (process.env.GITHUB_REF_NAME !== "v" + require("./package.json").version) process.exit(1)'
       - run: npm run check
+        env:
+          BRIDGE_CLAUDE: /nonexistent/unit-test-must-not-start-claude
       - run: npm run bundle -- --check
       - name: Create a reviewable draft
         env:
