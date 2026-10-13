@@ -25,8 +25,11 @@ test('desktop picker accepts deprecated mode fields when a Claude fork switches 
     const resumed = await f.bridge.request('thread/resume', { threadId: child.id });
     assert.equal(resumed.model, 'sonnet'); assert.equal(resumed.thread.turns.length, 3);
     const count = f.calls.length;
-    await assert.rejects(f.bridge.request('thread/settings/update', { threadId: child.id, futureSetting: true }), /not supported/);
+    const logs = []; f.bridge.log = (event, fields) => logs.push({ event, fields });
+    await assert.rejects(f.bridge.request('thread/settings/update', { threadId: child.id, SYNTHETIC_SECRET_FIELD: true }), /not supported/);
     assert.equal(f.calls.length, count);
+    assert.equal(logs[0].event, 'settings.unsupported');
+    assert.doesNotMatch(JSON.stringify(logs), /SYNTHETIC_SECRET_FIELD/);
   } finally { f.close(); }
 });
 

@@ -369,7 +369,7 @@ export class Bridge {
         for (const [key, value] of Object.entries(params)) if (value != null) {
           if (ignored.has(key)) this.log('settings.ignored', { threadId: params.threadId, reason: key });
           else if (!supported.has(key)) {
-            this.log('settings.unsupported', { threadId: params.threadId, reason: key });
+            this.log('settings.unsupported', { threadId: params.threadId, reason: 'unsupported_field' });
             throw new RpcError(`${key} is not supported in Claude thread settings`, -32602);
           }
         }
