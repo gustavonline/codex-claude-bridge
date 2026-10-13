@@ -8,18 +8,23 @@ export function forkCount(record, params) {
   if (params.experimentalPredictionMode || params.ephemeral)
     throw new RpcError('A persistent conversation fork is required for this bridge', -32602);
   if (params.beforeTurnId && params.lastTurnId) throw new RpcError('Choose beforeTurnId or lastTurnId, not both', -32602);
-  let count = record.turns.length;
+  const activeIndex = record.turns.findIndex(t => t.status === 'inProgress');
+  const settled = activeIndex < 0 ? record.turns.length : activeIndex;
+  let count = settled;
   const anchor = params.beforeTurnId ?? params.lastTurnId;
   if (anchor) {
     const index = record.turns.findIndex(t => t.id === anchor);
     if (index < 0) throw new RpcError('Fork boundary does not belong to this conversation', -32602);
     count = index + (params.lastTurnId ? 1 : 0);
   }
+  if (count > settled) throw new RpcError('Fork before the active turn or wait for it to finish', -32602);
   return count;
 }
 
 export async function forkThread(bridge, record, params) {
   const count = forkCount(record, params);
+  bridge.log('thread.fork_requested', { threadId: record.thread.id, retainedTurns: count,
+    reason: params.beforeTurnId ? 'before_turn' : params.lastTurnId ? 'through_turn' : 'settled_prefix' });
   const selected = await bridge.selection(record, params);
   const claudeSessionId = selected.provider === 'native' || record.turns[count - 1]?.provider === 'native' || (params.cwd && params.cwd !== record.thread.cwd)
     ? undefined : await bridge.history.before(record, count);

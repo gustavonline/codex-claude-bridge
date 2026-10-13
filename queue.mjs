@@ -90,6 +90,7 @@ export function continueQueue(bridge, record, status) {
     bridge.log('queue.paused', { threadId: record.thread.id, reason: record.archived ? 'archived' : status, queueLength: record.queue.length }); return;
   }
   setImmediate(() => {
+    if (!record.queue?.length || record.archived || record.turns.at(-1)?.status !== 'completed') return;
     if (bridge.active.has(record.thread.id) || bridge.starting.has(record.thread.id) || bridge.pendingSteers.has(record.thread.id) || bridge.changing.has(record.thread.id) || bridge.reverting.has(record.thread.id)) return;
     bridge.request('thread/queue/start', { threadId: record.thread.id }).catch(error => {
       bridge.log('queue.paused', { threadId: record.thread.id, reason: 'start_failed', queueLength: record.queue.length, ...errorMetadata(error) });

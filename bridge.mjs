@@ -114,8 +114,14 @@ export class Bridge {
     const id = record.thread.id;
     if (this.changing.has(id) || this.reverting.has(id) || this.starting.has(id) || this.pendingSteers.has(id) || (!allowActive && this.active.has(id)))
       throw new RpcError('Wait for the current turn or chat change to finish');
+    const running = this.active.get(id);
     this.changing.add(id);
-    try { return await work(); } finally { this.changing.delete(id); }
+    try { return await work(); } finally {
+      this.changing.delete(id);
+      // Completion may have deferred automatic queue progress while this
+      // metadata/prefix operation held the lock. Preserve Stop/archive pauses.
+      if (running && !this.active.has(id)) continueQueue(this, record, running.turn.status);
+    }
   }
   metadata(record, thread) {
     if (!thread || thread.id !== record.thread.id) return;
@@ -171,6 +177,9 @@ export class Bridge {
     if (method === 'thread/closed') {
       this.loaded.delete(params.threadId);
       if (this.closeWaiters.has(params.threadId)) { this.closeWaiters.get(params.threadId)(); return; }
+    }
+    if (record && ['thread/archived', 'thread/unarchived'].includes(method)) {
+      record.archived = method === 'thread/archived'; this.save(record);
     }
     if (record && record.provider === 'native' && (method.startsWith('turn/') || method.startsWith('item/')))
       await captureNative(this, record, method, params);
@@ -412,13 +421,15 @@ export class Bridge {
       }
       if (method === 'thread/archive' || method === 'thread/unarchive') {
         return this.exclusive(record, async () => {
-        const result = await this.native.request(method, params);
-        record.archived = method === 'thread/archive'; this.loaded.delete(params.threadId);
-        this.metadata(record, result.thread); this.save(record);
-        return result.thread ? { ...result, thread: this.thread(record, false) } : result;
-        });
+          const result = await this.native.request(method, params);
+          record.archived = method === 'thread/archive';
+          if (!this.active.has(params.threadId)) this.loaded.delete(params.threadId);
+          this.metadata(record, result.thread); this.save(record);
+          this.log(record.archived ? 'thread.archived' : 'thread.unarchived', { threadId: params.threadId });
+          return result.thread ? { ...result, thread: this.thread(record, false) } : result;
+        }, true);
       }
-      if (method === 'thread/fork') return this.exclusive(record, () => forkThread(this, record, params));
+      if (method === 'thread/fork') return this.exclusive(record, () => forkThread(this, record, params), true);
       if (method === 'thread/delete') throw new RpcError('Thread deletion is not implemented; archive the thread instead.', -32601);
       if (['review/start', 'thread/compact/start', 'thread/rollback'].includes(method)) throw new RpcError(`${method} is not implemented for Claude chats.`, -32601);
       // These native routes own/execute turns that are absent from Claude's

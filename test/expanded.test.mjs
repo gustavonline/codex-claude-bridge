@@ -171,6 +171,129 @@ test('public forks keep before/through/all prefixes, independent host identity a
   } finally { f.close(); }
 });
 
+test('desktop can fork a completed prefix while Claude or GPT continues its current turn', async () => {
+  for (const model of ['haiku', 'gpt-test']) {
+    const f = fixture(), hold = deferred(), entered = deferred();
+    let current;
+    try {
+      const id = await f.start();
+      const first = await f.send(id, 'retained', { model }); await f.done(first.turn.id);
+      f.controls.query = f.controls.nativeTurn = () => { entered.resolve(); return hold.promise; };
+      current = await f.send(id, 'not retained', { model });
+      await entered.promise;
+      await f.bridge.request('thread/queue/add', { threadId: id, clientUserMessageId: randomUUID(), input: text('parent queue') });
+      const before = structuredClone(f.bridge.records.get(id));
+      const fork = await f.bridge.request('thread/fork', { threadId: id });
+      assert.deepEqual(fork.thread.turns.map(t => t.id), [first.turn.id]);
+      assert.deepEqual(f.bridge.records.get(fork.thread.id).queue, []);
+      assert.equal(f.bridge.active.get(id).turn.id, current.turn.id);
+      assert.deepEqual(f.bridge.records.get(id), before);
+      await assert.rejects(f.bridge.request('thread/fork', { threadId: id, lastTurnId: current.turn.id }), /active turn/);
+      assert.equal(f.calls.filter(c => c.method === 'thread/fork').length, 1);
+      hold.resolve(); await f.done(current.turn.id);
+      await f.wait(e => e.method === 'turn/completed' && ![first.turn.id, current.turn.id].includes(e.params.turn.id));
+    } finally { hold.resolve(); if (current) await f.done(current.turn.id); await new Promise(r => setTimeout(r, 20)); f.close(); }
+  }
+});
+
+test('completion during a fork retains its original prefix and resumes only a successful parent queue', async () => {
+  for (const interrupted of [false, true]) {
+    const f = fixture(), hold = deferred(), entered = deferred(), forkEntered = deferred(), forkRelease = deferred();
+    let current, pending;
+    try {
+      const id = await f.start();
+      const first = await f.send(id, 'retained'); await f.done(first.turn.id);
+      f.controls.query = () => { entered.resolve(); return hold.promise; };
+      current = await f.send(id, 'finishes during fork');
+      await entered.promise;
+      const q = (await f.bridge.request('thread/queue/add', { threadId: id, clientUserMessageId: randomUUID(), input: text('queued') })).queuedSubmission;
+      f.controls.native = async method => { if (method === 'thread/fork') { forkEntered.resolve(); await forkRelease.promise; } };
+      pending = f.bridge.request('thread/fork', { threadId: id }); await forkEntered.promise;
+      if (interrupted) await f.bridge.request('turn/interrupt', { threadId: id, turnId: current.turn.id });
+      hold.resolve(); await f.done(current.turn.id);
+      assert.equal(f.queries.length, 2);
+      forkRelease.resolve();
+      const fork = await pending;
+      assert.deepEqual(fork.thread.turns.map(t => t.id), [first.turn.id]);
+      if (interrupted) {
+        await new Promise(r => setTimeout(r, 20));
+        assert.equal(f.queries.length, 2); assert.equal(f.bridge.records.get(id).queue[0].id, q.id);
+      } else {
+        await f.wait(e => e.method === 'turn/completed' && ![first.turn.id, current.turn.id].includes(e.params.turn.id));
+        assert.equal(f.queries.length, 3); assert.equal(f.bridge.records.get(id).queue.length, 0);
+      }
+    } finally { hold.resolve(); forkRelease.resolve(); if (pending) await pending; if (current) await f.done(current.turn.id); f.close(); }
+  }
+});
+
+test('self-archive during a tool call preserves the final turn and pauses the parent queue', async () => {
+  const f = fixture(), entered = deferred(), release = deferred();
+  let current;
+  try {
+    const id = await f.start();
+    f.controls.query = async () => { entered.resolve(); await release.promise; await f.bridge.request('thread/archive', { threadId: id }); };
+    current = await f.send(id, 'archive this chat'); await entered.promise;
+    const q = (await f.bridge.request('thread/queue/add', { threadId: id, clientUserMessageId: randomUUID(), input: text('wait for me') })).queuedSubmission;
+    release.resolve(); await f.done(current.turn.id);
+    assert.equal(f.bridge.records.get(id).archived, true);
+    assert.equal(f.bridge.records.get(id).turns.at(-1).status, 'completed');
+    await new Promise(r => setTimeout(r, 20));
+    assert.equal(f.queries.length, 1); assert.equal(f.bridge.records.get(id).queue[0].id, q.id);
+    f.restart();
+    assert.equal(f.bridge.records.get(id).archived, true);
+    assert.equal(f.bridge.records.get(id).turns.at(-1).status, 'completed');
+    await f.bridge.request('thread/unarchive', { threadId: id });
+    assert.equal(f.bridge.records.get(id).archived, false);
+    assert.equal(f.bridge.records.get(id).queue[0].id, q.id);
+  } finally { release.resolve(); if (current) await f.done(current.turn.id); f.close(); }
+});
+
+test('archiving across completion pauses on success and restores queue progress on native failure', async () => {
+  for (const fail of [false, true]) {
+    const f = fixture(), entered = deferred(), hold = deferred(), archiving = deferred(), release = deferred();
+    let current, pending;
+    try {
+      const id = await f.start();
+      f.controls.query = () => { entered.resolve(); return hold.promise; };
+      current = await f.send(id, 'active'); await entered.promise;
+      await f.bridge.request('thread/queue/add', { threadId: id, clientUserMessageId: randomUUID(), input: text('queued') });
+      f.controls.native = async method => {
+        if (method === 'thread/archive') { archiving.resolve(); await release.promise; if (fail) throw new Error('Synthetic archive failure'); }
+      };
+      pending = f.bridge.request('thread/archive', { threadId: id }); pending.catch(() => {});
+      await archiving.promise; hold.resolve(); await f.done(current.turn.id);
+      release.resolve();
+      if (fail) {
+        await assert.rejects(pending, /Synthetic archive failure/);
+        await f.wait(e => e.method === 'turn/completed' && e.params.turn.id !== current.turn.id);
+        assert.equal(f.queries.length, 2); assert.equal(f.bridge.records.get(id).archived, false);
+      } else {
+        await pending; await new Promise(r => setTimeout(r, 20));
+        assert.equal(f.queries.length, 1); assert.equal(f.bridge.records.get(id).archived, true);
+        assert.equal(f.bridge.records.get(id).queue.length, 1);
+      }
+    } finally { hold.resolve(); release.resolve(); if (pending) await pending.catch(() => {}); if (current) await f.done(current.turn.id); f.close(); }
+  }
+});
+
+test('a first active turn forks an empty independent prefix and native archive events survive restart', async () => {
+  const f = fixture(), hold = deferred(), entered = deferred();
+  let current;
+  try {
+    const id = await f.start(); f.controls.query = () => { entered.resolve(); return hold.promise; };
+    current = await f.send(id); await entered.promise;
+    const fork = await f.bridge.request('thread/fork', { threadId: id, beforeTurnId: current.turn.id });
+    assert.equal(fork.thread.turns.length, 0);
+    assert.equal(f.bridge.records.get(fork.thread.id).claudeSessionId, undefined);
+    await f.bridge.nativeNotification('thread/archived', { threadId: id });
+    assert.equal(f.bridge.records.get(id).archived, true);
+    hold.resolve(); await f.done(current.turn.id); f.restart();
+    assert.equal(f.bridge.records.get(id).archived, true);
+    await f.bridge.nativeNotification('thread/unarchived', { threadId: id });
+    assert.equal(f.bridge.records.get(id).archived, false);
+  } finally { hold.resolve(); if (current) await f.done(current.turn.id); f.close(); }
+});
+
 test('handoff excludes private reasoning, keeps tool results as untrusted data and leaves application context distinct', () => {
   const result = handoffContext([{ id: 't', status: 'completed', items: [
     { type: 'reasoning', text: 'PRIVATE' }, { type: 'agentMessage', text: 'Answer' },

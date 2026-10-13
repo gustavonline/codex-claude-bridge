@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Bridge } from '../bridge.mjs';
-import { search, configFor, discover, toolName, requiresApproval, allowedTool } from '../capabilities.mjs';
+import { search, configFor, discover, toolName, requiresApproval, allowedTool, instructions } from '../capabilities.mjs';
 
 test('discovery ranks actual capability words and exact native names, not common generated prefixes', () => {
   const entry = (server, name, description) => ({ name: toolName(server, name), description, route: { server, tool: name } });
@@ -29,6 +29,51 @@ test('discovery ranks actual capability words and exact native names, not common
   assert.ok(search(catalog, 'document', 8).matches.length <= 8);
   assert.throws(() => search(catalog, ' ', 5), /specific/);
   assert.throws(() => search(catalog, 'document', 9), /between/);
+});
+
+test('a named skill remains discoverable when its query also describes the task', () => {
+  const context = { name: 'studio:studio-context', description: 'Manage the chosen context home and retrieve relevant owner guidance.' };
+  const architecture = { name: 'templates:artifact-template-system-design', description: 'Document system architecture, components and data flows.' };
+  const catalog = [context, architecture, ...Array.from({ length: 30 }, (_, i) => ({
+    name: `studio:studio-method-${i}`, description: 'A separate method for project work.',
+  }))];
+  for (const query of ['Studio Context design system', 'studio-context for visual layout tokens', 'design system using STUDIO:STUDIO-CONTEXT']) {
+    const found = search(catalog, query, 1);
+    assert.equal(found.matches[0]?.name, context.name, query);
+    assert.equal(found.matches.length, 1);
+  }
+  assert.equal(search(catalog, 'system design architecture', 1).matches[0].name, architecture.name);
+  assert.equal(search(catalog, 'browser navigate screenshot').matches.length, 0);
+});
+
+test('mixed task queries anchor original tool names without matching generated prefixes', () => {
+  const make = (server, name) => ({ name: toolName(server, name), description: 'Perform the selected operation.', route: { server, tool: name } });
+  const fetch = make('app', 'notes.fetch'), generic = make('app', 'read');
+  const unrelated = make('notes_fetch', 'upload');
+  const catalog = [generic, unrelated, fetch];
+  assert.equal(search(catalog, 'notes fetch owner guide branding typography', 1).matches[0]?.name, fetch.name);
+  assert.deepEqual(search([unrelated], 'notes fetch owner guide').matches, []);
+  assert.deepEqual(search([generic], 'read owner guide branding typography').matches, []);
+});
+
+test('native-selected owner instructions are carried verbatim and reread without loading skill catalogs', async () => {
+  const statePath = mkdtempSync(join(tmpdir(), 'bridge-owner-instructions-'));
+  const source = join(statePath, 'AGENTS.override.md');
+  const native = { request: async method => {
+    assert.equal(method, 'config/read', 'instruction assembly must not preload skills');
+    return { config: {} };
+  } };
+  const record = { thread: { cwd: statePath }, options: {}, instructionSources: [source] };
+  try {
+    for (const guide of ['first', 'updated']) {
+      const owner = `<!-- OWNER:BEGIN -->\nContext: https://example.com/${guide}.\nUse Studio Context and read its guidance once per session.\n<!-- OWNER:END -->\n`;
+      writeFileSync(source, owner);
+      writeFileSync(join(statePath, 'AGENTS.md'), 'Unselected instructions must not be inherited.');
+      const prompt = await instructions(native, record);
+      assert.ok(prompt.includes(owner));
+      assert.ok(!prompt.includes('Unselected instructions must not be inherited.'));
+    }
+  } finally { rmSync(statePath, { recursive: true, force: true }); }
 });
 
 test('per-thread configuration and plugin restrictions apply to discovery and approval', async () => {

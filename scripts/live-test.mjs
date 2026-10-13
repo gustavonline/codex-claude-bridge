@@ -14,7 +14,7 @@ import { errorMetadata } from '../logging.mjs';
 const { values } = parseArgs({ options: { run: { type: 'boolean' }, 'copy-codex-auth': { type: 'boolean' }, scenario: { type: 'string' }, app: { type: 'string' }, source: { type: 'string' }, report: { type: 'string' } } });
 if (!values.run) throw new Error('This test consumes Claude and Codex quota. Pass --run to authorize synthetic test turns.');
 if (!values['copy-codex-auth']) throw new Error('Live GPT checks copy Codex auth.json to disposable private state. Pass --copy-codex-auth to opt in; compatibility checks need no auth copy.');
-if (values.scenario && !['native', 'steering'].includes(values.scenario)) throw new Error('Unknown scenario');
+if (values.scenario && !['native', 'steering', 'lifecycle'].includes(values.scenario)) throw new Error('Unknown scenario');
 const root = mkdtempSync(join(tmpdir(), 'bridge-live-')), source = join(root, 'source'), state = join(root, 'state');
 mkdirSync(source, { mode: 0o700 });
 writeFileSync(join(source, 'config.toml'), 'model_provider = "openai"\n', { mode: 0o600 });
@@ -45,6 +45,12 @@ async function connect() {
       const gate = toolGates.get(params.threadId);
       if (method === 'item/tool/call' && params.tool === 'steering_gate' && gate) {
         gate.entered.resolve(); await gate.release.promise;
+        if (gate.archiveOnRelease) {
+          try {
+            await peer.request('thread/archive', { threadId: params.threadId });
+            gate.archived = true;
+          } finally { gate.archiveFinished.resolve(); }
+        }
         return { success: true, contentItems: [{ type: 'inputText', text: 'Synthetic gate released. Follow the latest user instruction.' }] };
       }
       throw new Error('This test cannot approve tools or access the desktop');
@@ -81,7 +87,53 @@ try {
   const catalog = (await peer.request('model/list', {})).data;
   const gpt = catalog.find(m => m.model === 'gpt-6-luna') ?? catalog.find(m => !/^(claude|opus|sonnet|haiku)/.test(m.model));
   assert.ok(gpt);
-  if (values.scenario === 'steering') {
+  if (values.scenario === 'lifecycle') {
+    const cases = [];
+    for (const model of ['sonnet', gpt.model]) {
+      const threadId = (await peer.request('thread/start', { ...options, dynamicTools: [
+        { type: 'function', name: 'steering_gate', description: 'Synthetic lifecycle test gate; archives this disposable chat when released. Call once when instructed.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
+      ] })).thread.id;
+      const marker = `PREFIX_${randomUUID()}`;
+      const first = await send(threadId, `Remember ${marker}. Reply only ACK. Do not use tools.`, { model, effort: 'low' });
+      const gate = { entered: deferred(), release: deferred(), archiveFinished: deferred(), archiveOnRelease: true }; toolGates.set(threadId, gate);
+      report.modelCalls++;
+      const started = await peer.request('turn/start', { threadId, model, effort: 'low', clientUserMessageId: randomUUID(),
+        input: input('Find and call steering_gate once. I authorize it to archive this synthetic chat. After it returns, reply ARCHIVED_OK. Do not use any other tools.') });
+      let timer;
+      try {
+        await Promise.race([gate.entered.promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Live lifecycle gate timed out')), 60000); })]);
+        const fork = (await peer.request('thread/fork', { threadId })).thread;
+        expect(`${model}_active_fork_retains_only_finished_prefix`, fork.turns.length === 1 && fork.turns[0].id === first.turn.id && fork.id !== threadId);
+        const parent = (await peer.request('thread/read', { threadId, includeTurns: true })).thread;
+        expect(`${model}_parent_keeps_running`, parent.status.type === 'active' && parent.turns.at(-1).id === started.turn.id);
+        await assert.rejects(peer.request('thread/fork', { threadId, lastTurnId: started.turn.id }));
+        expect(`${model}_partial_turn_fork_rejected`, true);
+        const queued = (await peer.request('thread/queue/add', { threadId, clientUserMessageId: randomUUID(), input: input('This queued input must remain paused after archive.') })).queuedSubmission;
+        gate.release.resolve();
+        const completed = await waitFor(e => e.method === 'turn/completed' && e.params.turn.id === started.turn.id);
+        // Native archive can interrupt GPT before the archive RPC responds.
+        // Completion alone is not evidence that the enclosing tool has returned.
+        await gate.archiveFinished.promise;
+        expect(`${model}_self_archive_acknowledged`, gate.archived === true);
+        expect(`${model}_self_archive_turn_terminal`, model === 'sonnet' ? completed.params.turn.status === 'completed' : ['completed', 'interrupted'].includes(completed.params.turn.status));
+        const saved = JSON.parse(readFileSync(join(state, 'threads', `${threadId}.json`), 'utf8'));
+        expect(`${model}_archive_and_history_persisted`, saved.archived === true && saved.turns.length === 2);
+        expect(`${model}_archive_pauses_queue`, (await peer.request('thread/queue/list', { threadId })).data[0]?.id === queued.id);
+        await peer.request('thread/unarchive', { threadId });
+        expect(`${model}_unarchive_keeps_queue_paused`, (await peer.request('thread/queue/list', { threadId })).data[0]?.id === queued.id);
+        await peer.request('thread/queue/delete', { threadId, queuedSubmissionId: queued.id });
+        const childModel = model === 'sonnet' ? gpt.model : 'sonnet';
+        const child = await send(fork.id, 'Reply with the remembered PREFIX code only. Do not use tools.', { model: childModel, effort: 'low' });
+        expect(`${model}_fork_handoff_memory`, child.text.includes(marker));
+        cases.push({ threadId: fork.id, model: childModel, marker });
+      } finally { clearTimeout(timer); gate.release.resolve(); toolGates.delete(threadId); }
+    }
+    await disconnect(); await connect();
+    for (const c of cases) {
+      const recall = await send(c.threadId, 'Reply with the remembered PREFIX code only. Do not use tools.', { model: c.model, effort: 'low' });
+      expect(`${c.model}_fork_memory_after_restart`, recall.text.includes(c.marker));
+    }
+  } else if (values.scenario === 'steering') {
     report.steeringSubmissions = 0;
     const cases = [];
     for (const model of ['sonnet', gpt.model]) {

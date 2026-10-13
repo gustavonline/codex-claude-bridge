@@ -41,7 +41,7 @@ This is a component/deployment boundary view, not a proposed replacement GUI. Th
 
 ## Session coordination
 
-A caller can list/read/wait for bridge-managed chats in the same workspace and isolated profile, then send, queue, start a paused queue, interrupt an observed turn, or fork an idle chat. Read results are bounded and omit tool outputs unless requested; hidden reasoning is never returned. Ephemeral chats are visible only to themselves.
+A caller can list/read/wait for bridge-managed chats in the same workspace and isolated profile, then send, queue, start a paused queue, interrupt an observed turn, or fork a finished prefix while the original turn continues. Read results are bounded and omit tool outputs unless requested; hidden reasoning is never returned. Ephemeral chats are visible only to themselves.
 
 Mutations require the same resolved sandbox, approval policy, permission profile, configuration overrides and disabled-plugin set. Interactive policies require an explicit desktop approval for each new management action; declined, cancelled or outdated approvals do not dispatch. An explicitly selected `never` policy delegates these actions noninteractively within that matching boundary. Accepted retries return their existing receipt without another prompt. Models are still instructed to require human intent for sending/forking; the runtime enforces the selected policy, not a semantic interpretation of natural-language authorization. Workspace separation is a scope boundary, not an OS sandbox. Model-supplied flags cannot approve an operation.
 
@@ -54,6 +54,8 @@ Claude discovers these tools through its existing lazy interface. New managed ch
 Native app tools still own navigation, panels and host/project behavior. Native search/share/export and native transcript readers may omit Claude history; the session adapter is the supported read path. Other profiles, remote/cloud tasks, worktree orchestration, goals and automations are outside this facade.
 
 ## State and failures
+
+Fork selects a finished prefix before awaiting the SDK or native host. An active turn is excluded by default and cannot be explicitly included. The source keeps running; only concurrent history/settings changes remain exclusive. Archive/unarchive uses the native operation and notifications while retaining bridge history. A Claude tool can archive its own chat and finish its answer; native GPT archive may interrupt its turn. Queued work stays paused after archive or Stop. When a running turn finishes during a fork or metadata operation, queue progress resumes after the lock is released only if that turn succeeded and the chat is not archived.
 
 Live steering uses the public `turn/steer` contract and its required `expectedTurnId`. Each Claude turn keeps one official SDK query with a streaming input channel; `priority: next` delivers a correction at the next agent-loop boundary, including after an in-flight tool. It does not start another bridge turn or change the active model. Starting a queued message while a turn runs uses that same path. Native managed turns forward the public request to Codex.
 
