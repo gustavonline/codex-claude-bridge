@@ -65,6 +65,25 @@ test('authorized send, busy queue, retry and fork use existing histories and sur
   } finally { hold.resolve(); f.close(); }
 });
 
+test('authorized active-session forks use the completed prefix and retain their retry receipt', async () => {
+  const f = fixture(), hold = deferred(), entered = deferred();
+  let current;
+  try {
+    const caller = await f.start(), target = await f.start();
+    const first = await f.send(target, 'retained'); await f.done(first.turn.id);
+    f.controls.query = () => { entered.resolve(); return hold.promise; };
+    current = await f.send(target, 'active'); await entered.promise;
+    const args = { operation: 'fork', threadId: target, requestId: randomUUID() };
+    const child = await manage(f, caller, args);
+    assert.equal(child.turnCount, 1);
+    assert.equal((await manage(f, caller, args)).threadId, child.threadId);
+    assert.equal(f.bridge.active.get(target).turn.id, current.turn.id);
+    assert.equal(f.calls.filter(c => c.method === 'thread/fork').length, 1);
+    hold.resolve(); await f.done(current.turn.id); f.restart();
+    assert.equal((await manage(f, caller, args)).threadId, child.threadId);
+  } finally { hold.resolve(); if (current) await f.done(current.turn.id); f.close(); }
+});
+
 test('session waits wake on completion, report timeout, reject self-wait and release listeners on caller cancellation', async () => {
   const f = fixture(), hold = deferred();
   try {

@@ -9,6 +9,7 @@ export const logContext = new AsyncLocalStorage();
 export function errorMetadata(error) {
   const message = String(error?.message ?? error ?? '');
   const category = error?.code === -32601 ? 'unsupported_method'
+    : /Wait for the current turn or chat change|Wait for the current chat change|Wait for the history edit|Wait for the source chat change/i.test(message) ? 'busy_thread'
     : /steering.*uncertain|steering.*confirmed/i.test(message) ? 'steering_delivery'
     : /no longer active|no longer accepting|different message or turn/i.test(message) ? 'stale_turn'
     : /previous_response_id|previous response.*not found/i.test(message) ? 'response_cache'

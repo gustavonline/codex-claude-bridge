@@ -2,24 +2,30 @@ import { RpcError } from './rpc.mjs';
 import { provider } from './providers.mjs';
 import { resetNativeHistory } from './native-turns.mjs';
 
-export function forkCount(record, params) {
+export function forkCount(record, params, activeTurnId) {
   if (record.thread.ephemeral) throw new RpcError('Ephemeral chats do not support persistent forks', -32602);
   if (params.path) throw new RpcError('Fork bridge chats by threadId, not an alternative history path', -32602);
   if (params.experimentalPredictionMode || params.ephemeral)
     throw new RpcError('A persistent conversation fork is required for this bridge', -32602);
   if (params.beforeTurnId && params.lastTurnId) throw new RpcError('Choose beforeTurnId or lastTurnId, not both', -32602);
-  let count = record.turns.length;
+  // A terminal status can precede asynchronous checkpoint/tool finalization.
+  const activeIndex = record.turns.findIndex(t => t.status === 'inProgress' || t.id === activeTurnId);
+  const settled = activeIndex < 0 ? record.turns.length : activeIndex;
+  let count = settled;
   const anchor = params.beforeTurnId ?? params.lastTurnId;
   if (anchor) {
     const index = record.turns.findIndex(t => t.id === anchor);
     if (index < 0) throw new RpcError('Fork boundary does not belong to this conversation', -32602);
     count = index + (params.lastTurnId ? 1 : 0);
   }
+  if (count > settled) throw new RpcError('Fork before the active turn or wait for it to finish', -32602);
   return count;
 }
 
 export async function forkThread(bridge, record, params) {
-  const count = forkCount(record, params);
+  const count = forkCount(record, params, bridge.active.get(record.thread.id)?.turn.id);
+  bridge.log('thread.fork_requested', { threadId: record.thread.id, retainedTurns: count,
+    reason: params.beforeTurnId ? 'before_turn' : params.lastTurnId ? 'through_turn' : 'settled_prefix' });
   const selected = await bridge.selection(record, params);
   const claudeSessionId = selected.provider === 'native' || record.turns[count - 1]?.provider === 'native' || (params.cwd && params.cwd !== record.thread.cwd)
     ? undefined : await bridge.history.before(record, count);
@@ -48,7 +54,7 @@ export async function forkThread(bridge, record, params) {
   const child = { ...structuredClone(record), ...selected, thread: { ...result.thread, forkedFromId: record.thread.id }, options,
     sandbox: result.sandbox, approvalPolicy: result.approvalPolicy, activePermissionProfile: result.activePermissionProfile,
     instructionSources: result.instructionSources ?? record.instructionSources, disabledPluginIds: result.disabledPluginIds ?? record.disabledPluginIds,
-    turns: structuredClone(record.turns.slice(0, count)), claudeSessionId, loadedTools: [], queue: [], nativeQueueMigration: [], sessionForks: {}, archived: false,
+    turns: structuredClone(record.turns.slice(0, count)), claudeSessionId, loadedTools: [], queue: [], nativeQueueMigration: [], sessionForks: {}, resumePaths: [], archived: false,
     nativeProvider: result.modelProvider ?? hostProvider, hostProvider: result.modelProvider ?? hostProvider,
     nativeModel: result.model ?? record.nativeModel, nativeEffort: result.reasoningEffort ?? record.nativeEffort,
     approvalsReviewer: result.approvalsReviewer ?? record.approvalsReviewer,
