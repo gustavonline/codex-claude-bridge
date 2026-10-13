@@ -56,14 +56,16 @@ npm run bundle -- --pin
 Tests and packaging run on Linux and macOS with Node 22/24. Actual desktop operation is macOS-only. Live tests consume quota and require explicit opt-in:
 
 ```sh
-node scripts/live-test.mjs --run --app /Applications/Codex.app
+node scripts/live-test.mjs --run --copy-codex-auth --app /Applications/Codex.app
 ```
 
-Live tests use disposable local profiles, invented messages, official logins and public app-server calls. They never write to an existing user chat. A backend test does not prove that a desktop panel is visible.
+Live tests use disposable local profiles, invented messages, official logins and public app-server calls. The separate `--copy-codex-auth` opt-in permits a temporary private copy of Codex's login file, removed at cleanup. They never write to an existing user chat. A backend test does not prove that a desktop panel is visible.
 
 Read [architecture](docs/architecture.md), [support and acceptance](docs/support.md), and [operations and releases](docs/operations.md). Contributors use short branches and PRs; run the checks on the exact revision sent for independent review. See [AGENTS.md](AGENTS.md) for the execution contract.
 
 ## Authentication and ownership
+
+The first desktop launch copies an existing Codex/OpenAI `auth.json` into the isolated profile (file mode 0600, profile mode 0700), so GPT can use the existing login. This is a separate credential snapshot: it is not continuously mirrored, and later login changes are not written back to normal Codex. Token-refresh interaction between separate snapshots is unqualified; a separate sign-in may be needed if one becomes stale. `codex-claude check` never copies this file or sends model prompts.
 
 The bridge runs the unchanged Claude Code binary through the SDK. It does not read Claude credentials, imitate its HTTP client, distribute shared accounts or proxy usage. This preview selects the existing subscription login and filters inherited API/provider overrides to avoid accidentally switching billing. It does not implement an API-key product mode.
 

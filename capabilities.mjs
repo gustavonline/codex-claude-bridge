@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { dirname, join, parse } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { contextFragments } from './claude.mjs';
@@ -8,6 +9,22 @@ import { contextFragments } from './claude.mjs';
 export const toolName = (server, name) => `${server}_${name}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 45)
   + '_' + createHash('sha256').update(JSON.stringify([server, name])).digest('hex').slice(0, 8);
 const asText = value => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }] });
+export const permissionState = record => ({ sandbox: record.sandbox, approvalPolicy: record.approvalPolicy,
+  activePermissionProfile: record.activePermissionProfile ?? null, config: record.options?.config ?? {},
+  disabledPluginIds: record.disabledPluginIds ?? [] });
+
+export async function requestApproval(desktop, record, turnId, serverName, message, signal, policy = record.approvalPolicy) {
+  if (policy === 'never') throw new Error('This action requires approval, but the thread approval policy is never');
+  if (!['on-request', 'untrusted', 'on-failure'].includes(policy))
+    throw new Error('The resolved approval policy is unavailable or unsupported for bridge approval prompts');
+  signal?.throwIfAborted();
+  const approval = await desktop.request('mcpServer/elicitation/request', {
+    threadId: record.thread.id, turnId, serverName, mode: 'form', message,
+    requestedSchema: { type: 'object', properties: { approve: { type: 'boolean', title: 'Approve this action', default: false } }, required: ['approve'] },
+  }, 300_000, signal);
+  signal?.throwIfAborted();
+  if (approval.action !== 'accept' || approval.content?.approve !== true) throw new Error('The user declined this tool call');
+}
 export async function configFor(native, record) {
   const config = structuredClone((await native.request('config/read', { cwd: record.thread.cwd, includeLayers: false })).config);
   // config/read returns disk layers, not the desktop's per-thread overrides.
@@ -243,6 +260,13 @@ export function makeTools({ native, desktop, record, turn, item, signal }) {
         if (typeof args.command !== 'string' || !args.command.trim()) throw new Error('command must be a non-empty string');
         const timeoutMs = args.timeoutMs ?? 30_000;
         if (!Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 60_000) throw new Error('timeoutMs must be between 1000 and 60000');
+        if (!['readOnly', 'workspaceWrite', 'dangerFullAccess', 'externalSandbox'].includes(record.sandbox?.type))
+          throw new Error('A resolved Codex sandbox is required for shell commands');
+        const permissions = structuredClone(permissionState(record));
+        if (!['never', 'on-request'].includes(record.approvalPolicy))
+          await requestApproval(desktop, record, turn.id, 'codex', `Run this shell command in ${record.thread.cwd}?\n${args.command}`, signal);
+        signal.throwIfAborted();
+        if (!isDeepStrictEqual(permissions, permissionState(record))) throw new Error('Thread permissions changed while approval was pending; retry the command');
         processId = `bridge-shell-${id}`;
         const response = await native.request('command/exec', {
           command: ['/bin/zsh', '-c', args.command], cwd: record.thread.cwd,
@@ -256,13 +280,8 @@ export function makeTools({ native, desktop, record, turn, item, signal }) {
         if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) throw new Error('arguments must be an object');
         Object.assign(view, { server: entry.route.server ?? 'desktop', tool: entry.route.tool, arguments: args.arguments });
         if (entry.route.requiresApproval) {
-          if (entry.route.approvalPolicy === 'never') throw new Error('This Codex tool requires approval, but the thread approval policy is never');
-          const approval = await desktop.request('mcpServer/elicitation/request', {
-            threadId: record.thread.id, turnId: turn.id, serverName: entry.route.server,
-            mode: 'form', message: `Approve ${entry.route.server}.${entry.route.tool}?\n${JSON.stringify(args.arguments)}`,
-            requestedSchema: { type: 'object', properties: { approve: { type: 'boolean', title: 'Approve this action', default: false } }, required: ['approve'] },
-          }, 300_000, signal);
-          if (approval.action !== 'accept' || approval.content?.approve !== true) throw new Error('The user declined this tool call');
+          await requestApproval(desktop, record, turn.id, entry.route.server,
+            `Approve ${entry.route.server}.${entry.route.tool}?\n${JSON.stringify(args.arguments)}`, signal, entry.route.approvalPolicy);
           if (!(await discover(native, record)).some(t => t.name === entry.name)) throw new Error('This tool was disabled while approval was pending');
         }
         signal.throwIfAborted();

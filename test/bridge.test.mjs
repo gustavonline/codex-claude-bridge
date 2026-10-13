@@ -145,7 +145,7 @@ test('MCP relays real schemas, metadata, media and errors; shell retains Codex s
   } }, desktop: { request: async (method, params) => {
     calls.push({ method, params });
     return { success: false, contentItems: [{ type: 'inputImage', imageUrl: 'data:image/png;base64,YQ==' }] };
-  } }, record: { thread: { id: 'thread', cwd: '/tmp' }, sandbox, options: { dynamicTools: [{ type: 'function', name: 'desktop', description: 'Desktop callback', inputSchema: { type: 'object' } }] } }, turn: { id: 'turn' },
+  } }, record: { thread: { id: 'thread', cwd: '/tmp' }, sandbox, approvalPolicy: 'never', options: { dynamicTools: [{ type: 'function', name: 'desktop', description: 'Desktop callback', inputSchema: { type: 'object' } }] } }, turn: { id: 'turn' },
     item: (phase, value) => events.push({ phase, value: structuredClone(value) }), signal: new AbortController().signal });
   const [left, right] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'test', version: '1' });

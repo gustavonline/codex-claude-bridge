@@ -26,7 +26,9 @@ Old prototype chats may retain native prompt copies from before clean tool-host 
 
 ## Reproduce
 
-`npm run check` runs synthetic tests without model credentials. `node scripts/live-test.mjs --run` opts into real Claude/Codex usage using disposable local state. `--scenario native` isolates native session-tool and restart checks. `codex-claude check` sends no model prompt and checks installed protocol/catalog compatibility.
+`npm run check` runs synthetic tests without model credentials. `node scripts/live-test.mjs --run --copy-codex-auth` opts into real Claude/Codex usage and temporary Codex-login copies using disposable private local state. `--scenario native` isolates native session-tool and restart checks. `codex-claude check` copies no Codex auth file, sends no model prompt and checks installed protocol/catalog compatibility.
+
+Session management under interactive approval policies asks in the desktop; `never` is explicit noninteractive delegation within matching workspace/permission boundaries. Shell calls under `untrusted`/`on-failure` conservatively ask before execution. Unknown or granular prompt policies are not mapped and fail explicitly; there is no permission escalation.
 
 Raw local evidence and conversations are not distributed. CI results are attached to exact GitHub revisions; reviewed release notes record runtime versions and outstanding limits. A passing mock is never presented as a live or visual result.
 

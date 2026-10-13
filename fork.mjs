@@ -2,7 +2,7 @@ import { RpcError } from './rpc.mjs';
 import { provider } from './providers.mjs';
 import { resetNativeHistory } from './native-turns.mjs';
 
-export async function forkThread(bridge, record, params) {
+export function forkCount(record, params) {
   if (record.thread.ephemeral) throw new RpcError('Ephemeral chats do not support persistent forks', -32602);
   if (params.path) throw new RpcError('Fork bridge chats by threadId, not an alternative history path', -32602);
   if (params.experimentalPredictionMode || params.ephemeral)
@@ -15,6 +15,11 @@ export async function forkThread(bridge, record, params) {
     if (index < 0) throw new RpcError('Fork boundary does not belong to this conversation', -32602);
     count = index + (params.lastTurnId ? 1 : 0);
   }
+  return count;
+}
+
+export async function forkThread(bridge, record, params) {
+  const count = forkCount(record, params);
   const selected = await bridge.selection(record, params);
   const claudeSessionId = selected.provider === 'native' || record.turns[count - 1]?.provider === 'native' || (params.cwd && params.cwd !== record.thread.cwd)
     ? undefined : await bridge.history.before(record, count);

@@ -140,7 +140,7 @@ def wrapper_script(node, real, state, source, claude):
             'exec ' + shlex.quote(node) + ' ' + shlex.quote(str(ROOT / 'bridge.mjs')) + ' "$@"\n')
 
 
-def prepare(state, source, app):
+def prepare(state, source, app, *, copy_auth=True):
     validate_paths(state, source)
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(state, 0o700)
@@ -153,6 +153,8 @@ def prepare(state, source, app):
     marker = state / 'snapshot.json'
     if not marker.exists():
         for name in ['config.toml', 'AGENTS.md', 'auth.json', 'models_cache.json']:
+            if name == 'auth.json' and not copy_auth:
+                continue
             path = source / name
             if path.is_file():
                 shutil.copy2(path, isolated / name)
@@ -231,6 +233,7 @@ def main():
     parser.add_argument('--app', type=Path, default=Path('/Applications/ChatGPT.app'))
     parser.add_argument('--prepare', action='store_true')
     parser.add_argument('--stdio', action='store_true')
+    parser.add_argument('--no-auth-copy', action='store_true', help='Prepare a profile without copying Codex auth.json')
     parser.add_argument('--stop', action='store_true')
     parser.add_argument('--status', action='store_true')
     parser.add_argument('--check', action='store_true')
@@ -263,7 +266,7 @@ def main():
     if pid and not args.stdio and not args.prepare:
         print(json.dumps({'pid': pid, 'state': str(state), 'alreadyRunning': True}))
         return
-    env, executable, wrapper = prepare(state, args.source.resolve(), args.app.resolve())
+    env, executable, wrapper = prepare(state, args.source.resolve(), args.app.resolve(), copy_auth=not args.no_auth_copy)
     if args.prepare:
         print(json.dumps({'state': str(state), 'wrapper': str(wrapper), 'source_config': str(args.source)}))
     elif args.stdio:
