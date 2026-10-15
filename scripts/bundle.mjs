@@ -12,7 +12,8 @@ const bundle = { version, sha256: hash(archive) };
 const pin = 'plugins/codex-claude/bundle.json';
 if (process.argv.includes('--pin')) writeFileSync(pin, JSON.stringify(bundle, null, 2) + '\n');
 if (process.argv.includes('--check') && JSON.stringify(JSON.parse(readFileSync(pin, 'utf8'))) !== JSON.stringify(bundle))
-  throw new Error('Stale plugin bundle pin: run npm run bundle -- --pin after final source changes.');
+  // Archive bytes depend on checkout file modes and possibly the Node/zlib build; report what this host generated.
+  throw new Error(`Stale plugin bundle pin: generated ${JSON.stringify(bundle)} with Node ${process.version} zlib ${process.versions.zlib}; run npm run bundle -- --pin after final source changes.`);
 const stage = join(dist, 'stage'); rmSync(stage, { recursive: true, force: true });
 try {
   const plugin = join(stage, 'codex-claude'), installer = join(stage, 'Model Bridge');
