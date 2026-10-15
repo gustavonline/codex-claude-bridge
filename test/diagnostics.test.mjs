@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, statSync, symlinkSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { getPriority, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -123,6 +123,7 @@ test('runtime metadata covers turn preparation and native turns without prompt c
     log('process.started');
     assert.equal(read().pid, process.pid); assert.equal(read().runId, log.runId);
     assert.ok(Math.abs(read().startedAt - (Date.now() - process.uptime() * 1000)) < 2000);
+    assert.equal(read().nice, getPriority());
     log('rpc.start', { peer: 'desktop', direction: 'inbound', method: 'turn/start', rpcId: 42, threadId: id, input: secret });
     assert.equal(read().pendingStarts, 1);
     log('turn.started', { threadId: id, turnId: turn, provider: 'native' });
@@ -134,7 +135,7 @@ test('runtime metadata covers turn preparation and native turns without prompt c
     assert.equal(read().pendingStarts, 1);
     log('turn.prepared', { threadId: id, status: 'failed' });
     assert.equal(read().pendingStarts, 0);
-  } finally { rmSync(state, { recursive: true, force: true }); }
+  } finally { log.close(); rmSync(state, { recursive: true, force: true }); }
 });
 
 test('CLI keeps a stable user profile, adopts old snapshots and refuses corrupt settings', () => {
@@ -230,7 +231,7 @@ test('stop identifies profile paths containing spaces and refuses busy preparati
   const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)', '--', 'bridge.mjs', `--user-data-dir=${join(state, 'desktop')}`], { stdio: 'ignore' });
   const done = new Promise(resolve => child.on('exit', resolve));
   const runId = randomUUID(), record = join(state, 'runtime', `${child.pid}-${runId}.json`);
-  const runtime = work => writeFileSync(record, JSON.stringify({ pid: child.pid, runId, startedAt, ...work }));
+  const runtime = work => writeFileSync(record, JSON.stringify({ pid: child.pid, runId, startedAt, updatedAt: new Date().toISOString(), nice: getPriority(child.pid), ...work }));
   try {
     writeFileSync(join(state, 'desktop.pid'), String(child.pid)); mkdirSync(join(state, 'runtime'));
     runtime({ activeThreads: [], startingThreads: [randomUUID()], pendingStarts: 1 });

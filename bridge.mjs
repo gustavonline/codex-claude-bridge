@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { Peer, RpcError } from './rpc.mjs';
-import { createLogger, errorMetadata } from './logging.mjs';
+import { createLogger, errorMetadata, unsafeActivity } from './logging.mjs';
 import { models, codexModels, startQuery } from './claude.mjs';
 import { instructions, makeTools } from './capabilities.mjs';
 import { sessionHistory } from './history.mjs';
@@ -178,6 +178,10 @@ export class Bridge {
   }
   async nativeNotification(method, params) {
     const record = this.records.get(params.threadId);
+    // A turn native has already started cannot be refused here. Desktop requests
+    // that could start work are refused before dispatch (rpc.mjs). If this turn can be
+    // neither recorded nor invalidated, the logger's process signal makes the
+    // guard report unverified immediately (logging.mjs markUnsafe).
     if (!record && ['turn/started', 'turn/completed'].includes(method))
       this.log(method === 'turn/started' ? 'turn.started' : 'turn.finished', { threadId: params.threadId,
         turnId: params.turn?.id, status: params.turn?.status, provider: 'native', ...(params.turn?.error ? errorMetadata(params.turn.error) : {}) });
@@ -568,7 +572,7 @@ export class Bridge {
       // The idle guard could still read an older idle record. Admit no work.
       this.starting.delete(record.thread.id);
       this.log('turn.prepared', { threadId: record.thread.id, status: 'failed' });
-      throw new RpcError('Bridge activity could not be recorded safely, so the turn was not started. Check the profile runtime directory, then retry.');
+      throw new RpcError(unsafeActivity);
     }
     const promise = this.prepareTurn(record, params);
     this.pendingStarts.set(record.thread.id, { params, promise });

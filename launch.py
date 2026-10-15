@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Launch the installed, unmodified Codex app with an isolated runtime/profile."""
 import argparse
+from datetime import datetime
 import fcntl
 import json
 import math
@@ -33,21 +34,29 @@ def running_pid(state):
 
 UNVERIFIED = 'unverified-bridge-activity'
 RUNTIME_RECORD = re.compile(r'(\d+)-([\da-f-]{36})\.json')
+# A live Bridge republishes its record every 5 seconds (logging.mjs). An older
+# record is not idle evidence. This is supplemental to the nice-value signal.
+RUNTIME_LEASE_SECONDS = 20
+# A Bridge that cannot record or invalidate its work raises its own nice value
+# by one (logging.mjs). At this value it can signal no further, so it is never
+# treated as verified.
+LOWEST_SIGNALLING_NICE = 19
 
 
 def bridge_processes():
-    """Return live bridge.mjs processes as pid -> (parent pid, start time)."""
-    result = subprocess.run(['ps', '-axo', 'pid=,ppid=,lstart=,command='], capture_output=True, text=True,
+    """Return live bridge.mjs processes as pid -> (parent pid, start time, nice or None)."""
+    result = subprocess.run(['ps', '-axo', 'pid=,ppid=,nice=,lstart=,command='], capture_output=True, text=True,
                             timeout=5, env={**os.environ, 'LC_ALL': 'C'}, check=True)
     bridges, parents = {}, {}
     for line in result.stdout.splitlines():
-        fields = line.split(None, 7)
-        if len(fields) < 7:
+        fields = line.split(None, 8)
+        if len(fields) < 8:
             continue
         pid, ppid = int(fields[0]), int(fields[1])
         parents[pid] = ppid
-        if len(fields) == 8 and re.search(r'bridge\.mjs(?:\s|$)', fields[7]):
-            bridges[pid] = (ppid, time.mktime(time.strptime(' '.join(fields[2:7]), '%a %b %d %H:%M:%S %Y')))
+        if len(fields) == 9 and re.search(r'bridge\.mjs(?:\s|$)', fields[8]):
+            nice = int(fields[2]) if re.fullmatch(r'-?\d+', fields[2]) else None
+            bridges[pid] = (ppid, time.mktime(time.strptime(' '.join(fields[3:8]), '%a %b %d %H:%M:%S %Y')), nice)
     return bridges, parents
 
 
@@ -78,8 +87,13 @@ def runtime_record(path, pid, run_id):
     if (type(record.get('pid')) is not int or record['pid'] != pid or record.get('runId') != run_id
             or type(started) not in (int, float) or not math.isfinite(started) or started <= 0
             or not all(type(v) is list and all(type(t) is str for t in v) for v in lists)
-            or type(pending) is not int or pending < 0):
+            or type(pending) is not int or pending < 0 or type(record.get('updatedAt')) is not str
+            or type(record.get('nice')) is not int):
         raise ValueError('Invalid runtime record')
+    updated = datetime.fromisoformat(record['updatedAt'].replace('Z', '+00:00'))
+    if updated.tzinfo is None:
+        raise ValueError('Runtime record time has no zone')
+    record['updatedAt'] = updated.timestamp()
     return record
 
 
@@ -113,6 +127,15 @@ def active_threads(state, desktop=None):
             continue
         if abs(record['startedAt'] / 1000 - bridges[pid][1]) > 3:
             continue  # Written by an earlier process that had this PID.
+        nice = bridges[pid][2]
+        if nice is None or nice >= LOWEST_SIGNALLING_NICE or record['nice'] != nice:
+            # The process signalled that this record may understate its work, or
+            # its signal is unknown. No file write is needed for this to hold.
+            active.append(UNVERIFIED)
+            continue
+        if not -5 <= time.time() - record['updatedAt'] <= RUNTIME_LEASE_SECONDS:
+            active.append(UNVERIFIED)  # Expired lease: current work is unconfirmed.
+            continue
         verified.add(pid)
         work = record['activeThreads'] + record['startingThreads']
         active.extend(work or (['turn-starting'] if record['pendingStarts'] else []))
