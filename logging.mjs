@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, openSync, readSync, closeSync } from 'node:fs';
+import { appendFileSync, chmodSync, constants, existsSync, fchmodSync, fstatSync, ftruncateSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync, writeSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -71,8 +71,11 @@ export function createLogger(directory, { maxBytes = 1024 * 1024, runtimeDirecto
   // Captured once: the idle guard matches it to the OS process start time, so a
   // recycled PID cannot inherit this record.
   const startedAt = Date.now() - Math.round(process.uptime() * 1000);
-  const record = runtimeDirectory && join(runtimeDirectory, `${process.pid}-${runId}.json`);
+  let record = runtimeDirectory && join(runtimeDirectory, `${process.pid}-${runId}.json`);
   const recordTemp = runtimeDirectory && join(runtimeDirectory, `.${process.pid}-${runId}.tmp`);
+  // Open descriptor of the published record. Truncating it needs no directory
+  // permission, so a failed publication can still invalidate older evidence.
+  let published;
   const active = new Map(), starting = new Map(), preparing = new Set();
   let bytes = 0, warned = false;
   const warning = () => {
@@ -93,9 +96,41 @@ export function createLogger(directory, { maxBytes = 1024 * 1024, runtimeDirecto
     }
   } catch { warning(); }
   if (record) {
-    try { mkdirSync(runtimeDirectory, { recursive: true, mode: 0o700 }); chmodSync(runtimeDirectory, 0o700); pruneRuntime(runtimeDirectory); }
-    catch { warning(); }
-    process.once('exit', () => { try { unlinkSync(record); } catch {} });
+    let directoryFd;
+    try {
+      mkdirSync(runtimeDirectory, { recursive: true, mode: 0o700 });
+      // Refuse a redirected runtime directory before any chmod, prune or write.
+      directoryFd = openSync(runtimeDirectory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      fchmodSync(directoryFd, 0o700); pruneRuntime(runtimeDirectory);
+    } catch {
+      // No record: the guard treats this live process as unverified, never idle.
+      record = null; warning();
+    } finally { if (directoryFd !== undefined) closeSync(directoryFd); }
+    if (record) process.once('exit', () => { try { unlinkSync(record); } catch { invalidate(); } });
+  }
+  function invalidate() {
+    try { ftruncateSync(published, 0); return true; } catch { return false; }
+  }
+  // Returns false only when this process's work may be understated: the new
+  // state was not published and the older record could not be invalidated.
+  function publish(snapshot) {
+    let fd;
+    try {
+      // unlink removes a planted link itself, never its target; O_EXCL then
+      // refuses anything recreated at this private temporary name.
+      try { unlinkSync(recordTemp); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      fd = openSync(recordTemp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      if (!fstatSync(fd).isFile()) throw new Error('Runtime record is not a regular file');
+      writeSync(fd, JSON.stringify(snapshot));
+      renameSync(recordTemp, record);
+      if (published !== undefined) closeSync(published);
+      published = fd; fd = undefined;
+      return true;
+    } catch {
+      warning();
+      if (fd !== undefined) closeSync(fd);
+      return published === undefined || invalidate();
+    }
   }
   const log = (event, fields = {}) => {
     const safe = safeEntry({ ...logContext.getStore(), ...fields, time: new Date().toISOString(), pid: process.pid, event, runId });
@@ -110,16 +145,10 @@ export function createLogger(directory, { maxBytes = 1024 * 1024, runtimeDirecto
       if (event === 'rpc.start') { starting.set(key, safe.threadId); changed = true; }
       if (event === 'rpc.finish') { starting.delete(key); changed = true; }
     }
+    let recorded = true;
     if (record && changed) {
-      const snapshot = { pid: process.pid, runId, startedAt, updatedAt: safe.time, stopping: event === 'process.stopping',
-        activeThreads: [...active.keys()].filter(Boolean), startingThreads: [...new Set([...starting.values(), ...preparing])].filter(Boolean), pendingStarts: starting.size + preparing.size };
-      try { writeFileSync(recordTemp, JSON.stringify(snapshot), { mode: 0o600 }); renameSync(recordTemp, record); }
-      catch {
-        // An older snapshot may understate current work. Without a record the
-        // idle guard treats this live process as unverified, never idle.
-        try { unlinkSync(record); } catch {}
-        warning();
-      }
+      recorded = publish({ pid: process.pid, runId, startedAt, updatedAt: safe.time, stopping: event === 'process.stopping',
+        activeThreads: [...active.keys()].filter(Boolean), startingThreads: [...new Set([...starting.values(), ...preparing])].filter(Boolean), pendingStarts: starting.size + preparing.size });
     }
     try {
       const line = JSON.stringify(safe) + '\n';
@@ -128,6 +157,7 @@ export function createLogger(directory, { maxBytes = 1024 * 1024, runtimeDirecto
       }
       appendFileSync(path, line, { mode: 0o600 }); chmodSync(path, 0o600); bytes += Buffer.byteLength(line);
     } catch { warning(); }
+    return recorded;
   };
   log.path = path;
   log.runId = runId;

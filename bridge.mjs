@@ -564,7 +564,12 @@ export class Bridge {
     if (this.changing.has(record.thread.id) || this.reverting.has(record.thread.id) || this.pendingSteers.has(record.thread.id)) throw new RpcError('Wait for the current chat change to finish');
     if (this.active.has(record.thread.id) || this.starting.has(record.thread.id)) throw new RpcError('A turn is already running. Queue the message or interrupt before starting another.', -32602);
     this.starting.add(record.thread.id);
-    this.log('turn.preparing', { threadId: record.thread.id, queuedSubmissionId: params.queuedSubmissionId });
+    if (this.log('turn.preparing', { threadId: record.thread.id, queuedSubmissionId: params.queuedSubmissionId }) === false) {
+      // The idle guard could still read an older idle record. Admit no work.
+      this.starting.delete(record.thread.id);
+      this.log('turn.prepared', { threadId: record.thread.id, status: 'failed' });
+      throw new RpcError('Bridge activity could not be recorded safely, so the turn was not started. Check the profile runtime directory, then retry.');
+    }
     const promise = this.prepareTurn(record, params);
     this.pendingStarts.set(record.thread.id, { params, promise });
     let accepted;

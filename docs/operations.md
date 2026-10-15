@@ -19,7 +19,15 @@ A session-tool fork can conservatively report an uncertain receipt even when mod
 
 ## Upgrade and recover
 
-Run the versioned installer from a downloaded release or built bundle. It verifies the npm archive checksum, stages dependencies, runs compatibility checks, and only then stops an idle installation and replaces it. The previous package remains at `~/.local/share/codex-claude-bridge.previous`. It preserves source configuration, profile and conversations. It refuses concurrent installation and busy shutdown. Stop counts work in every live Bridge process of the app: each process keeps its own runtime record, matched to the process by ID and start time. A live Bridge process without a valid record, including one from a version before 0.3.0-rc.9, is treated as busy rather than idle; let its chats finish and retry. Do not update from the bridge chat that is actively running the installer.
+Run the versioned installer from a downloaded release or built bundle. It verifies the npm archive checksum, stages dependencies, runs compatibility checks, and only then stops an idle installation and replaces it. The previous package remains at `~/.local/share/codex-claude-bridge.previous`. It preserves source configuration, profile and conversations. It refuses concurrent installation and busy shutdown. Do not update from the bridge chat that is actively running the installer.
+
+Stop checks are made by whichever CLI runs them:
+
+- **0.3.0-rc.9 and later stopping its own version.** Stop counts work in every live Bridge process of the app. Each process keeps its own runtime record, matched by process ID and start time. A live Bridge process without a valid record is reported as unverified activity and is not stopped. If a record cannot be updated or invalidated, the Bridge refuses to start a new turn.
+- **Upgrading from 0.3.0-rc.8 or earlier.** The installer stops the app with the *installed* (old) CLI before replacing it, so that stop uses the old check. The old check can miss a turn that is still being prepared when the app runs more than one Bridge process. Staging and checking the new package does not change this.
+- **A newer CLI meeting an older live Bridge process.** That process never writes a runtime record, so it stays unverified until it exits. Finishing its chats or retrying does not change the result.
+
+For an upgrade from 0.3.0-rc.8 or earlier, quit the isolated app yourself from its own window once its chats show no running, queued or starting messages. Then confirm that `codex-claude status` reports it is not running. With the app already stopped, the installer's stop step does nothing. Neither an idle reading from the older CLI nor a retry proves that no work is in progress.
 
 If setup fails after replacement, the installer restores the prior package and reports the failure. If a later runtime regression appears, stop the idle app and reinstall the last known-good release. Profile data is separate; do not delete it as part of rolling back a package. Recovering from a future incompatible data format may require that release's migration guidance.
 

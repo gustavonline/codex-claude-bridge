@@ -20,8 +20,8 @@ function fixture() {
   const cli = version => `#!/bin/sh
 case "$1" in
   --version) echo '${version}';;
-  check) echo check >> "$BRIDGE_TEST_LOG"; [ "$BRIDGE_TEST_FAILURE" != check ];;
-  stop) echo stop >> "$BRIDGE_TEST_LOG"; [ "$BRIDGE_TEST_FAILURE" != busy ];;
+  check) echo "check\${BRIDGE_TEST_VERSIONED:+ ${version}}" >> "$BRIDGE_TEST_LOG"; [ "$BRIDGE_TEST_FAILURE" != check ];;
+  stop) echo "stop\${BRIDGE_TEST_VERSIONED:+ ${version}}" >> "$BRIDGE_TEST_LOG"; [ "$BRIDGE_TEST_FAILURE" != busy ];;
   setup) echo setup >> "$BRIDGE_TEST_LOG"; [ "$BRIDGE_TEST_FAILURE" != setup ];;
   *) echo start >> "$BRIDGE_TEST_LOG";;
 esac
@@ -40,8 +40,8 @@ echo npm >> "$BRIDGE_TEST_LOG"
   put(join(bundle, 'bundle.json'), JSON.stringify({ version: '0.3.0-rc.1', sha256: createHash('sha256').update(archive).digest('hex') }));
   const log = join(root, 'events');
   return { root, home, bundle, bin, parent, install, put,
-    run: (failure = '') => spawnSync('sh', [join(bundle, 'install.command')], { encoding: 'utf8', env: {
-      ...process.env, BRIDGE_TEST_HOME: home, BRIDGE_TEST_LOG: log, BRIDGE_TEST_FAILURE: failure } }),
+    run: (failure = '', extra = {}) => spawnSync('sh', [join(bundle, 'install.command')], { encoding: 'utf8', env: {
+      ...process.env, BRIDGE_TEST_HOME: home, BRIDGE_TEST_LOG: log, BRIDGE_TEST_FAILURE: failure, ...extra } }),
     events: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [],
     version: () => spawnSync(join(install, 'node_modules/.bin/codex-claude'), ['--version'], { encoding: 'utf8' }).stdout?.trim(),
     close: () => rmSync(root, { recursive: true, force: true }),
@@ -124,4 +124,18 @@ cp "$BRIDGE_TEST_HOME/download.tgz" "$bridge_test_output"
 `, 0o700);
     assert.equal(f.run().status, 0); assert.deepEqual(f.events().slice(-3), ['public-download', 'setup', 'start']);
   } finally { f.close(); }
+});
+
+test('an upgrade checks the staged CLI but stops through the installed one, whose busy refusal keeps it installed', () => {
+  const f = fixture();
+  try {
+    const run = f.run('', { BRIDGE_TEST_VERSIONED: '1' }); assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(f.events().slice(0, 3), ['npm', 'check 0.3.0-rc.1', 'stop 0.2.1'],
+      'the previous version decides whether the running app is idle');
+  } finally { f.close(); }
+  const busy = fixture();
+  try {
+    assert.notEqual(busy.run('busy', { BRIDGE_TEST_VERSIONED: '1' }).status, 0);
+    assert.deepEqual(busy.events(), ['npm', 'check 0.3.0-rc.1', 'stop 0.2.1']); assert.equal(busy.version(), '0.2.1');
+  } finally { busy.close(); }
 });

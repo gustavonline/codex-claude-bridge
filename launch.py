@@ -3,12 +3,14 @@
 import argparse
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import plistlib
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tomllib
 import sys
@@ -59,12 +61,24 @@ def descends_from(pid, ancestor, parents):
     return False
 
 
+def reject_constant(value):
+    raise ValueError('Nonstandard JSON number')
+
+
 def runtime_record(path, pid, run_id):
-    record = json.loads(path.read_text())
+    # Regular files only; NaN/Infinity and booleans are not numbers here.
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW)) as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ValueError('Runtime record is not a regular file')
+        record = json.load(f, parse_constant=reject_constant)
+    if not isinstance(record, dict):
+        raise ValueError('Invalid runtime record')
+    started, pending = record.get('startedAt'), record.get('pendingStarts')
     lists = [record.get('activeThreads'), record.get('startingThreads')]
-    if (record.get('pid') != pid or record.get('runId') != run_id or not isinstance(record.get('startedAt'), (int, float))
-            or not all(isinstance(v, list) and all(isinstance(t, str) for t in v) for v in lists)
-            or not isinstance(record.get('pendingStarts'), int) or record['pendingStarts'] < 0):
+    if (type(record.get('pid')) is not int or record['pid'] != pid or record.get('runId') != run_id
+            or type(started) not in (int, float) or not math.isfinite(started) or started <= 0
+            or not all(type(v) is list and all(type(t) is str for t in v) for v in lists)
+            or type(pending) is not int or pending < 0):
         raise ValueError('Invalid runtime record')
     return record
 
@@ -76,7 +90,14 @@ def active_threads(state, desktop=None):
     try:
         bridges, parents = bridge_processes()
         directory = state / 'runtime'
-        names = os.listdir(directory) if directory.exists() else []
+        try:
+            mode = os.lstat(directory).st_mode
+        except FileNotFoundError:
+            names = []
+        else:
+            if not stat.S_ISDIR(mode):
+                return [UNVERIFIED]  # Includes a redirected runtime directory.
+            names = os.listdir(directory)
     except (OSError, ValueError, subprocess.SubprocessError):
         return [UNVERIFIED]
     verified = set()
@@ -112,7 +133,7 @@ def validate_paths(state, source):
         snapshot = json.loads(marker.read_text())
         if Path(snapshot['source']).resolve() != source or Path(snapshot['isolated']).resolve() != state / 'codex':
             raise RuntimeError('This profile belongs to another source. Use its original source or a new --state.')
-    for name in ['codex', 'desktop', 'threads', 'logs']:
+    for name in ['codex', 'desktop', 'threads', 'logs', 'runtime']:
         if (state / name).is_symlink():
             raise RuntimeError('Isolated profile directories must not be symlinks.')
 
@@ -313,7 +334,7 @@ def main():
         if pid:
             active = active_threads(state, pid)
             if UNVERIFIED in active:
-                raise RuntimeError('Bridge activity could not be verified, so it was not stopped. Let chats finish, then retry or run codex-claude doctor.')
+                raise RuntimeError('Bridge activity could not be verified, so it was not stopped. A Bridge process without a valid runtime record, including one started by an earlier version, stays unverified until it exits; retrying does not change that. Run codex-claude doctor.')
             if active:
                 raise RuntimeError('A chat is active. Stop its turn in Codex before restarting the bridge.')
             os.kill(pid, 15)
