@@ -36,7 +36,7 @@ export class Bridge {
     Object.assign(this, { native, desktop, statePath, getModels, runQuery, history, log });
     this.records = new Map(); this.active = new Map(); this.loaded = new Set(); this.starting = new Set();
     this.reverting = new Set();
-    this.changing = new Set(); this.pendingStarts = new Map(); this.pendingSteers = new Map();
+    this.changing = new Set(); this.pendingStarts = new Map(); this.pendingSteers = new Map(); this.resuming = new Map();
     this.settingsWaiters = new Map();
     this.closeWaiters = new Map();
     this.nativeStarts = new Map(); this.nativeCompletions = new Map(); this.internalReverts = new Map();
@@ -342,6 +342,7 @@ export class Bridge {
     }
     if (record) {
       if (method.startsWith('thread/queue/')) return queueRequest(this, record, method, params);
+      if (method === 'thread/resume' && this.resuming.has(record.thread.id)) return this.resume(record, params);
       if (this.changing.has(record.thread.id) && ['turn/start', 'thread/revert', 'thread/resume', 'thread/settings/update', 'thread/unload', 'thread/unsubscribe', 'thread/archive', 'thread/unarchive'].includes(method))
         throw new RpcError('Wait for the current chat change to finish');
       if (this.reverting.has(record.thread.id) && ['turn/start', 'thread/revert', 'thread/resume', 'thread/unload', 'thread/unsubscribe', 'thread/archive', 'thread/unarchive'].includes(method))
@@ -379,44 +380,7 @@ export class Bridge {
         await this.updatePermissions(record, params, selection);
         return {};
       });
-      if (method === 'thread/resume') {
-        this.checkWorkspace(record, params);
-        const { path, history, ...resumeParams } = params;
-        const hasPath = path != null && path !== '';
-        const matchingPath = typeof path === 'string' && (path === record.thread.path || record.resumePaths?.includes(path));
-        this.log('thread.resume_requested', { threadId: record.thread.id,
-          reason: history != null ? 'alternate_history' : hasPath ? matchingPath ? 'matching_path' : 'alternate_path' : 'thread_id' });
-        if (history != null || (hasPath && !matchingPath)) throw new RpcError('Resume Claude chats by threadId; alternative history/path is not supported.', -32602);
-        if (this.active.has(params.threadId) && Object.entries(params).some(([key, value]) =>
-          ['model', 'config', 'baseInstructions', 'developerInstructions', 'permissions', 'sandbox', 'approvalPolicy'].includes(key)
-          && value != null && !isDeepStrictEqual(value, key === 'model' ? record.model : record.options[key])))
-          throw new RpcError('Wait for the active Claude turn before changing resume settings');
-        return this.exclusive(record, async () => {
-        const selected = await this.selection(record, params);
-        const model = selected.model;
-        // Desktop echoes the native rollout path when opening a fork. Accept
-        // that known identity hint, but always resume the host by threadId.
-        const options = mergeOptions(record.options, resumeParams);
-        delete options.path; delete options.history;
-        if (selected.provider === 'native') await reloadNativeHost(this, record, model);
-        const result = await this.native.request(method, { ...options,
-          model: selected.provider === 'native' ? model : record.nativeModel ?? model,
-          modelProvider: record.hostProvider ?? record.options.modelProvider ?? 'claude_code', excludeTurns: true });
-        this.applySelection(record, selected); record.options = { ...options, model, approvalPolicy: result.approvalPolicy };
-        this.loaded.add(record.thread.id);
-        record.sandbox = result.sandbox; record.disabledPluginIds = result.disabledPluginIds;
-        record.approvalPolicy = result.approvalPolicy;
-        record.activePermissionProfile = result.activePermissionProfile;
-        record.nativeModel = result.model ?? record.nativeModel; record.nativeEffort = result.reasoningEffort ?? record.nativeEffort;
-        record.instructionSources = result.instructionSources ?? record.instructionSources; this.save(record);
-        this.metadata(record, result.thread);
-        return { ...result, model: record.model, modelProvider: provider(record), reasoningEffort: record.effort,
-          ...(result.collaborationMode ? { collaborationMode: this.settingsView(record, result).collaborationMode } : {}),
-          thread: this.thread(record, !params.excludeTurns && !params.initialTurnsPage),
-          turnsBackwardsCursor: record.turns.length ? `at:${record.turns.at(-1).id}` : null, itemsBackwardsCursor: null,
-          initialTurnsPage: params.initialTurnsPage ? this.turnPage(record, params.initialTurnsPage) : null };
-        }, true);
-      }
+      if (method === 'thread/resume') return this.resume(record, params);
       if (method === 'thread/read') return { thread: this.thread(record, !!params.includeTurns) };
       if (method === 'thread/turns/list') {
         return this.turnPage(record, params);
@@ -474,6 +438,63 @@ export class Bridge {
       ...(server.toolsError ? errorMetadata(server.toolsError) : {}),
     });
     return result;
+  }
+  async resume(record, params) {
+    const threadId = record.thread.id;
+    this.checkWorkspace(record, params);
+    const { path, history, ...resumeParams } = params;
+    const hasPath = path != null && path !== '';
+    const matchingPath = typeof path === 'string' && (path === record.thread.path || record.resumePaths?.includes(path));
+    this.log('thread.resume_requested', { threadId,
+      reason: history != null ? 'alternate_history' : hasPath ? matchingPath ? 'matching_path' : 'alternate_path' : 'thread_id' });
+    if (history != null || (hasPath && !matchingPath)) throw new RpcError('Resume Claude chats by threadId; alternative history/path is not supported.', -32602);
+    if (this.active.has(params.threadId) && Object.entries(params).some(([key, value]) =>
+      ['model', 'config', 'baseInstructions', 'developerInstructions', 'permissions', 'sandbox', 'approvalPolicy'].includes(key)
+      && value != null && !isDeepStrictEqual(value, key === 'model' ? record.model : record.options[key])))
+      throw new RpcError('Wait for the active Claude turn before changing resume settings');
+    // Desktop can reopen one chat from two views at once, e.g. after unarchive.
+    // An identical request shares the in-flight native resume; only the
+    // requested turn view differs. Any other request still waits its turn.
+    const key = Object.fromEntries(Object.entries(resumeParams)
+      .filter(([name, value]) => value != null && name !== 'excludeTurns' && name !== 'initialTurnsPage'));
+    const view = result => {
+      const current = this.records.get(threadId) ?? record;
+      return { ...result, model: current.model, modelProvider: provider(current), reasoningEffort: current.effort,
+        ...(result.collaborationMode ? { collaborationMode: this.settingsView(current, result).collaborationMode } : {}),
+        thread: this.thread(current, !params.excludeTurns && !params.initialTurnsPage),
+        turnsBackwardsCursor: current.turns.length ? `at:${current.turns.at(-1).id}` : null, itemsBackwardsCursor: null,
+        initialTurnsPage: params.initialTurnsPage ? this.turnPage(current, params.initialTurnsPage) : null };
+    };
+    const pending = this.resuming.get(threadId);
+    if (pending) {
+      if (!isDeepStrictEqual(pending.key, key)) throw new RpcError('Wait for the current chat change to finish');
+      this.log('thread.resume_joined', { threadId });
+      return view(await pending.promise);
+    }
+    const promise = this.exclusive(record, async () => {
+      const selected = await this.selection(record, params);
+      const model = selected.model;
+      // Desktop echoes the native rollout path when opening a fork. Accept
+      // that known identity hint, but always resume the host by threadId.
+      const options = mergeOptions(record.options, resumeParams);
+      delete options.path; delete options.history;
+      if (selected.provider === 'native') await reloadNativeHost(this, record, model);
+      const result = await this.native.request('thread/resume', { ...options,
+        model: selected.provider === 'native' ? model : record.nativeModel ?? model,
+        modelProvider: record.hostProvider ?? record.options.modelProvider ?? 'claude_code', excludeTurns: true });
+      this.applySelection(record, selected); record.options = { ...options, model, approvalPolicy: result.approvalPolicy };
+      this.loaded.add(threadId);
+      record.sandbox = result.sandbox; record.disabledPluginIds = result.disabledPluginIds;
+      record.approvalPolicy = result.approvalPolicy;
+      record.activePermissionProfile = result.activePermissionProfile;
+      record.nativeModel = result.model ?? record.nativeModel; record.nativeEffort = result.reasoningEffort ?? record.nativeEffort;
+      record.instructionSources = result.instructionSources ?? record.instructionSources; this.save(record);
+      this.metadata(record, result.thread);
+      return result;
+    }, true);
+    this.resuming.set(threadId, { key, promise });
+    try { return view(await promise); }
+    finally { if (this.resuming.get(threadId)?.promise === promise) this.resuming.delete(threadId); }
   }
   async revert(record, params) {
     const threadId = record.thread.id;
