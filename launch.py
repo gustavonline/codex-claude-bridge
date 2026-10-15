@@ -29,16 +29,74 @@ def running_pid(state):
         return None
 
 
-def active_threads(state):
+UNVERIFIED = 'unverified-bridge-activity'
+RUNTIME_RECORD = re.compile(r'(\d+)-([\da-f-]{36})\.json')
+
+
+def bridge_processes():
+    """Return live bridge.mjs processes as pid -> (parent pid, start time)."""
+    result = subprocess.run(['ps', '-axo', 'pid=,ppid=,lstart=,command='], capture_output=True, text=True,
+                            timeout=5, env={**os.environ, 'LC_ALL': 'C'}, check=True)
+    bridges, parents = {}, {}
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 7)
+        if len(fields) < 7:
+            continue
+        pid, ppid = int(fields[0]), int(fields[1])
+        parents[pid] = ppid
+        if len(fields) == 8 and re.search(r'bridge\.mjs(?:\s|$)', fields[7]):
+            bridges[pid] = (ppid, time.mktime(time.strptime(' '.join(fields[2:7]), '%a %b %d %H:%M:%S %Y')))
+    return bridges, parents
+
+
+def descends_from(pid, ancestor, parents):
+    seen = set()
+    while pid and pid not in seen:
+        if pid == ancestor:
+            return True
+        seen.add(pid)
+        pid = parents.get(pid)
+    return False
+
+
+def runtime_record(path, pid, run_id):
+    record = json.loads(path.read_text())
+    lists = [record.get('activeThreads'), record.get('startingThreads')]
+    if (record.get('pid') != pid or record.get('runId') != run_id or not isinstance(record.get('startedAt'), (int, float))
+            or not all(isinstance(v, list) and all(isinstance(t, str) for t in v) for v in lists)
+            or not isinstance(record.get('pendingStarts'), int) or record['pendingStarts'] < 0):
+        raise ValueError('Invalid runtime record')
+    return record
+
+
+def active_threads(state, desktop=None):
+    # Every live Bridge instance must report its own work. Missing, malformed or
+    # unreadable evidence is unverified activity, never idle. Logs are not used.
     active = []
-    runtime_path = state / 'runtime.json'
-    if runtime_path.exists():
-        runtime = json.loads(runtime_path.read_text())
-        probe = subprocess.run(['ps', '-p', str(runtime.get('pid', 0)), '-o', 'command='], capture_output=True, text=True, timeout=3)
-        if re.search(r'bridge\.mjs(?:\s|$)', probe.stdout):
-            active.extend(runtime.get('activeThreads', []) + runtime.get('startingThreads', []))
-            if runtime.get('pendingStarts') and not active:
-                active.append('turn-starting')
+    try:
+        bridges, parents = bridge_processes()
+        directory = state / 'runtime'
+        names = os.listdir(directory) if directory.exists() else []
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return [UNVERIFIED]
+    verified = set()
+    for name in names:
+        match = RUNTIME_RECORD.fullmatch(name)
+        pid = int(match[1]) if match else None
+        if pid not in bridges:
+            continue  # Ended instance, or its PID now belongs to a non-Bridge process.
+        try:
+            record = runtime_record(directory / name, pid, match[2])
+        except (OSError, ValueError):
+            active.append(UNVERIFIED)
+            continue
+        if abs(record['startedAt'] / 1000 - bridges[pid][1]) > 3:
+            continue  # Written by an earlier process that had this PID.
+        verified.add(pid)
+        work = record['activeThreads'] + record['startingThreads']
+        active.extend(work or (['turn-starting'] if record['pendingStarts'] else []))
+    if desktop and any(pid not in verified and descends_from(pid, desktop, parents) for pid in bridges):
+        active.append(UNVERIFIED)
     for path in (state / 'threads').glob('*.json'):
         record = json.loads(path.read_text())
         if any(turn.get('status') == 'inProgress' for turn in record.get('turns', [])):
@@ -244,7 +302,7 @@ def main():
         return
     if args.status:
         pid = running_pid(state)
-        print(json.dumps({'pid': pid, 'running': bool(pid), 'activeThreads': active_threads(state) if pid else []}))
+        print(json.dumps({'pid': pid, 'running': bool(pid), 'activeThreads': active_threads(state, pid) if pid else []}))
         return
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Serializes simultaneous launch/stop commands; no daemon or extra service.
@@ -253,7 +311,10 @@ def main():
     pid = running_pid(state)
     if args.stop:
         if pid:
-            if active_threads(state):
+            active = active_threads(state, pid)
+            if UNVERIFIED in active:
+                raise RuntimeError('Bridge activity could not be verified, so it was not stopped. Let chats finish, then retry or run codex-claude doctor.')
+            if active:
                 raise RuntimeError('A chat is active. Stop its turn in Codex before restarting the bridge.')
             os.kill(pid, 15)
             deadline = time.monotonic() + 15

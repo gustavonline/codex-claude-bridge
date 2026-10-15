@@ -726,7 +726,7 @@ async function main() {
     const result = spawnSync(executable, args, { stdio: 'inherit' }); process.exit(result.status ?? 1);
   }
   if (args.some(a => a.startsWith('unix://') || a.startsWith('ws://'))) throw new Error('This bridge currently supports desktop stdio transport only.');
-  const log = createLogger(join(dirname(process.env.BRIDGE_STATE), 'logs'), { runtimePath: join(dirname(process.env.BRIDGE_STATE), 'runtime.json') });
+  const log = createLogger(join(dirname(process.env.BRIDGE_STATE), 'logs'), { runtimeDirectory: join(dirname(process.env.BRIDGE_STATE), 'runtime') });
   runtimeLog = log;
   process.on('uncaughtExceptionMonitor', error => log('process.failed', errorMetadata(error)));
   log('process.started', { version: JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version });

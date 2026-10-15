@@ -54,9 +54,25 @@ export function safeEntry(entry) {
       : /slow|paused|recovered|unmatched|interrupted/.test(entry.event) ? 'warn' : 'info', ...safeFields(entry) };
 }
 
-export function createLogger(directory, { maxBytes = 1024 * 1024, runtimePath } = {}) {
+// Each Bridge process owns one runtime record. Several app-server instances can
+// share a profile; one instance's start or exit must not replace another's work.
+const runtimeRecord = /^(\d+)-[\da-f-]{36}\.(?:json|tmp)$/;
+function pruneRuntime(runtimeDirectory) {
+  for (const name of readdirSync(runtimeDirectory)) {
+    const pid = Number(runtimeRecord.exec(name.replace(/^\./, ''))?.[1]);
+    if (!pid || pid === process.pid) continue;
+    try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') unlinkSync(join(runtimeDirectory, name)); }
+  }
+}
+
+export function createLogger(directory, { maxBytes = 1024 * 1024, runtimeDirectory } = {}) {
   const path = join(directory, `bridge-${process.pid}.jsonl`);
   const runId = randomUUID();
+  // Captured once: the idle guard matches it to the OS process start time, so a
+  // recycled PID cannot inherit this record.
+  const startedAt = Date.now() - Math.round(process.uptime() * 1000);
+  const record = runtimeDirectory && join(runtimeDirectory, `${process.pid}-${runId}.json`);
+  const recordTemp = runtimeDirectory && join(runtimeDirectory, `.${process.pid}-${runId}.tmp`);
   const active = new Map(), starting = new Map(), preparing = new Set();
   let bytes = 0, warned = false;
   const warning = () => {
@@ -76,26 +92,36 @@ export function createLogger(directory, { maxBytes = 1024 * 1024, runtimePath } 
       if (last[0] !== 10) { appendFileSync(path, '\n'); bytes++; }
     }
   } catch { warning(); }
+  if (record) {
+    try { mkdirSync(runtimeDirectory, { recursive: true, mode: 0o700 }); chmodSync(runtimeDirectory, 0o700); pruneRuntime(runtimeDirectory); }
+    catch { warning(); }
+    process.once('exit', () => { try { unlinkSync(record); } catch {} });
+  }
   const log = (event, fields = {}) => {
     const safe = safeEntry({ ...logContext.getStore(), ...fields, time: new Date().toISOString(), pid: process.pid, event, runId });
     if (!safe) return;
+    let changed = event === 'process.started' || event === 'process.stopping';
+    if (event === 'turn.started') { active.set(safe.threadId, safe.turnId); changed = true; }
+    if (event === 'turn.finished' && active.get(safe.threadId) === safe.turnId) { active.delete(safe.threadId); changed = true; }
+    if (event === 'turn.preparing') { preparing.add(safe.threadId); changed = true; }
+    if (event === 'turn.prepared') { preparing.delete(safe.threadId); changed = true; }
+    if (safe.direction === 'inbound' && ['turn/start', 'turn/steer', 'thread/queue/start'].includes(safe.method)) {
+      const key = `${safe.peer}:${safe.rpcId}`;
+      if (event === 'rpc.start') { starting.set(key, safe.threadId); changed = true; }
+      if (event === 'rpc.finish') { starting.delete(key); changed = true; }
+    }
+    if (record && changed) {
+      const snapshot = { pid: process.pid, runId, startedAt, updatedAt: safe.time, stopping: event === 'process.stopping',
+        activeThreads: [...active.keys()].filter(Boolean), startingThreads: [...new Set([...starting.values(), ...preparing])].filter(Boolean), pendingStarts: starting.size + preparing.size };
+      try { writeFileSync(recordTemp, JSON.stringify(snapshot), { mode: 0o600 }); renameSync(recordTemp, record); }
+      catch {
+        // An older snapshot may understate current work. Without a record the
+        // idle guard treats this live process as unverified, never idle.
+        try { unlinkSync(record); } catch {}
+        warning();
+      }
+    }
     try {
-      let changed = event === 'process.started' || event === 'process.stopping';
-      if (event === 'turn.started') { active.set(safe.threadId, safe.turnId); changed = true; }
-      if (event === 'turn.finished' && active.get(safe.threadId) === safe.turnId) { active.delete(safe.threadId); changed = true; }
-      if (event === 'turn.preparing') { preparing.add(safe.threadId); changed = true; }
-      if (event === 'turn.prepared') { preparing.delete(safe.threadId); changed = true; }
-      if (safe.direction === 'inbound' && ['turn/start', 'turn/steer', 'thread/queue/start'].includes(safe.method)) {
-        const key = `${safe.peer}:${safe.rpcId}`;
-        if (event === 'rpc.start') { starting.set(key, safe.threadId); changed = true; }
-        if (event === 'rpc.finish') { starting.delete(key); changed = true; }
-      }
-      if (runtimePath && changed) {
-        const snapshot = { pid: process.pid, runId, updatedAt: safe.time, stopping: event === 'process.stopping',
-          activeThreads: [...active.keys()].filter(Boolean), startingThreads: [...new Set([...starting.values(), ...preparing])].filter(Boolean), pendingStarts: starting.size + preparing.size };
-        writeFileSync(runtimePath + '.tmp', JSON.stringify(snapshot), { mode: 0o600 });
-        renameSync(runtimePath + '.tmp', runtimePath);
-      }
       const line = JSON.stringify(safe) + '\n';
       if (bytes && bytes + Buffer.byteLength(line) > maxBytes) {
         renameSync(path, path + '.1'); bytes = 0;

@@ -19,7 +19,7 @@ A session-tool fork can conservatively report an uncertain receipt even when mod
 
 ## Upgrade and recover
 
-Run the versioned installer from a downloaded release or built bundle. It verifies the npm archive checksum, stages dependencies, runs compatibility checks, and only then stops an idle installation and replaces it. The previous package remains at `~/.local/share/codex-claude-bridge.previous`. It preserves source configuration, profile and conversations. It refuses concurrent installation and busy shutdown. Do not update from the bridge chat that is actively running the installer.
+Run the versioned installer from a downloaded release or built bundle. It verifies the npm archive checksum, stages dependencies, runs compatibility checks, and only then stops an idle installation and replaces it. The previous package remains at `~/.local/share/codex-claude-bridge.previous`. It preserves source configuration, profile and conversations. It refuses concurrent installation and busy shutdown. Stop counts work in every live Bridge process of the app: each process keeps its own runtime record, matched to the process by ID and start time. A live Bridge process without a valid record, including one from a version before 0.3.0-rc.9, is treated as busy rather than idle; let its chats finish and retry. Do not update from the bridge chat that is actively running the installer.
 
 If setup fails after replacement, the installer restores the prior package and reports the failure. If a later runtime regression appears, stop the idle app and reinstall the last known-good release. Profile data is separate; do not delete it as part of rolling back a package. Recovering from a future incompatible data format may require that release's migration guidance.
 

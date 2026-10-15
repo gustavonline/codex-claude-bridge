@@ -18,7 +18,7 @@ This is an MVP preview, not full Codex parity. Checks are intentionally divided 
 | Skills/plugins/settings | Lazy discovery, named skills inside task queries, current enablement, approval rejection and one-way additions/updates/removals tested. Native-selected owner instructions are preserved. No full catalog injected into Claude. |
 | Images and context | Text, supported local images, image URL/data, mentions and additional context have tests. Audio and image file-ID references are rejected; historical image pixels after model switch need broader proof. |
 | Crash/restart/logging | Interrupted recovery, uncertain tool results, deduplication, content-free logging, rotation and diagnosis tested. No automatic retry of uncertain external actions. |
-| Updates/install | Versioned bundle, integrity checks, staging, idle-only replacement and recovery package. Hosted CI proves source/package checks; local compatibility probes prove the installed runtime contract. |
+| Updates/install | Versioned bundle, integrity checks, staging, idle-only replacement and recovery package. RC8 and earlier could treat a chat being prepared as idle when another Bridge process of the same app started or exited; the idle check now reads every live process's own record and treats missing or unreadable evidence as busy. This is tested with synthetic processes, not yet on an installed Mac. Hosted CI proves source/package checks; local compatibility probes prove the installed runtime contract. |
 
 ## Explicitly unsupported or unqualified
 
