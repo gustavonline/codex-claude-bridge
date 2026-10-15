@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
-import { errorMetadata, logContext } from './logging.mjs';
+import { errorMetadata, logContext, unsafeActivity } from './logging.mjs';
 const context = params => {
   const threadId = params.threadId ?? params.thread?.id, turnId = params.turnId ?? params.expectedTurnId ?? params.turn?.id;
   return { ...(threadId ? { threadId } : {}), ...(turnId ? { turnId } : {}) };
@@ -32,10 +32,13 @@ export class Peer {
         const fields = { peer: name, direction: 'inbound', rpcId: message.id, method: message.method,
           traceId: randomUUID(), ...context(message.params ?? {}) };
         const started = performance.now();
-        log('rpc.start', fields);
+        // false: a start could not be recorded and older idle evidence could not
+        // be invalidated. Refuse it before any Bridge or native dispatch.
+        const recorded = log('rpc.start', fields) !== false;
         const slow = this.slow(fields, started);
         await logContext.run({ traceId: fields.traceId, ...context(message.params ?? {}) }, async () => {
           try {
+            if (!recorded) throw new RpcError(unsafeActivity);
             const result = await request(message.method, message.params ?? {});
             log('rpc.finish', { ...fields, ...context(result ?? {}), status: 'completed', durationMs: Math.round(performance.now() - started) });
             this.send({ id: message.id, result });

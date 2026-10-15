@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Launch the installed, unmodified Codex app with an isolated runtime/profile."""
 import argparse
+from datetime import datetime
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import plistlib
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import tomllib
 import sys
@@ -29,16 +32,115 @@ def running_pid(state):
         return None
 
 
-def active_threads(state):
+UNVERIFIED = 'unverified-bridge-activity'
+RUNTIME_RECORD = re.compile(r'(\d+)-([\da-f-]{36})\.json')
+# A live Bridge republishes its record every 5 seconds (logging.mjs). An older
+# record is not idle evidence. This is supplemental to the nice-value signal.
+RUNTIME_LEASE_SECONDS = 20
+# A Bridge that cannot record or invalidate its work raises its own nice value
+# by one (logging.mjs). At this value it can signal no further, so it is never
+# treated as verified.
+LOWEST_SIGNALLING_NICE = 19
+
+
+def bridge_processes():
+    """Return live bridge.mjs processes as pid -> (parent pid, start time, nice or None)."""
+    result = subprocess.run(['ps', '-axo', 'pid=,ppid=,nice=,lstart=,command='], capture_output=True, text=True,
+                            timeout=5, env={**os.environ, 'LC_ALL': 'C'}, check=True)
+    bridges, parents = {}, {}
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 8)
+        if len(fields) < 8:
+            continue
+        pid, ppid = int(fields[0]), int(fields[1])
+        parents[pid] = ppid
+        if len(fields) == 9 and re.search(r'bridge\.mjs(?:\s|$)', fields[8]):
+            nice = int(fields[2]) if re.fullmatch(r'-?\d+', fields[2]) else None
+            bridges[pid] = (ppid, time.mktime(time.strptime(' '.join(fields[3:8]), '%a %b %d %H:%M:%S %Y')), nice)
+    return bridges, parents
+
+
+def descends_from(pid, ancestor, parents):
+    seen = set()
+    while pid and pid not in seen:
+        if pid == ancestor:
+            return True
+        seen.add(pid)
+        pid = parents.get(pid)
+    return False
+
+
+def reject_constant(value):
+    raise ValueError('Nonstandard JSON number')
+
+
+def runtime_record(path, pid, run_id):
+    # Regular files only; NaN/Infinity and booleans are not numbers here.
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW)) as f:
+        if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+            raise ValueError('Runtime record is not a regular file')
+        record = json.load(f, parse_constant=reject_constant)
+    if not isinstance(record, dict):
+        raise ValueError('Invalid runtime record')
+    started, pending = record.get('startedAt'), record.get('pendingStarts')
+    lists = [record.get('activeThreads'), record.get('startingThreads')]
+    if (type(record.get('pid')) is not int or record['pid'] != pid or record.get('runId') != run_id
+            or type(started) not in (int, float) or not math.isfinite(started) or started <= 0
+            or not all(type(v) is list and all(type(t) is str for t in v) for v in lists)
+            or type(pending) is not int or pending < 0 or type(record.get('updatedAt')) is not str
+            or type(record.get('nice')) is not int):
+        raise ValueError('Invalid runtime record')
+    updated = datetime.fromisoformat(record['updatedAt'].replace('Z', '+00:00'))
+    if updated.tzinfo is None:
+        raise ValueError('Runtime record time has no zone')
+    record['updatedAt'] = updated.timestamp()
+    return record
+
+
+def active_threads(state, desktop=None):
+    # Every live Bridge instance must report its own work. Missing, malformed or
+    # unreadable evidence is unverified activity, never idle. Logs are not used.
     active = []
-    runtime_path = state / 'runtime.json'
-    if runtime_path.exists():
-        runtime = json.loads(runtime_path.read_text())
-        probe = subprocess.run(['ps', '-p', str(runtime.get('pid', 0)), '-o', 'command='], capture_output=True, text=True, timeout=3)
-        if re.search(r'bridge\.mjs(?:\s|$)', probe.stdout):
-            active.extend(runtime.get('activeThreads', []) + runtime.get('startingThreads', []))
-            if runtime.get('pendingStarts') and not active:
-                active.append('turn-starting')
+    try:
+        bridges, parents = bridge_processes()
+        directory = state / 'runtime'
+        try:
+            mode = os.lstat(directory).st_mode
+        except FileNotFoundError:
+            names = []
+        else:
+            if not stat.S_ISDIR(mode):
+                return [UNVERIFIED]  # Includes a redirected runtime directory.
+            names = os.listdir(directory)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return [UNVERIFIED]
+    verified = set()
+    for name in names:
+        match = RUNTIME_RECORD.fullmatch(name)
+        pid = int(match[1]) if match else None
+        if pid not in bridges:
+            continue  # Ended instance, or its PID now belongs to a non-Bridge process.
+        try:
+            record = runtime_record(directory / name, pid, match[2])
+        except (OSError, ValueError):
+            active.append(UNVERIFIED)
+            continue
+        if abs(record['startedAt'] / 1000 - bridges[pid][1]) > 3:
+            continue  # Written by an earlier process that had this PID.
+        nice = bridges[pid][2]
+        if nice is None or nice >= LOWEST_SIGNALLING_NICE or record['nice'] != nice:
+            # The process signalled that this record may understate its work, or
+            # its signal is unknown. No file write is needed for this to hold.
+            active.append(UNVERIFIED)
+            continue
+        if not -5 <= time.time() - record['updatedAt'] <= RUNTIME_LEASE_SECONDS:
+            active.append(UNVERIFIED)  # Expired lease: current work is unconfirmed.
+            continue
+        verified.add(pid)
+        work = record['activeThreads'] + record['startingThreads']
+        active.extend(work or (['turn-starting'] if record['pendingStarts'] else []))
+    if desktop and any(pid not in verified and descends_from(pid, desktop, parents) for pid in bridges):
+        active.append(UNVERIFIED)
     for path in (state / 'threads').glob('*.json'):
         record = json.loads(path.read_text())
         if any(turn.get('status') == 'inProgress' for turn in record.get('turns', [])):
@@ -54,7 +156,7 @@ def validate_paths(state, source):
         snapshot = json.loads(marker.read_text())
         if Path(snapshot['source']).resolve() != source or Path(snapshot['isolated']).resolve() != state / 'codex':
             raise RuntimeError('This profile belongs to another source. Use its original source or a new --state.')
-    for name in ['codex', 'desktop', 'threads', 'logs']:
+    for name in ['codex', 'desktop', 'threads', 'logs', 'runtime']:
         if (state / name).is_symlink():
             raise RuntimeError('Isolated profile directories must not be symlinks.')
 
@@ -244,7 +346,7 @@ def main():
         return
     if args.status:
         pid = running_pid(state)
-        print(json.dumps({'pid': pid, 'running': bool(pid), 'activeThreads': active_threads(state) if pid else []}))
+        print(json.dumps({'pid': pid, 'running': bool(pid), 'activeThreads': active_threads(state, pid) if pid else []}))
         return
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Serializes simultaneous launch/stop commands; no daemon or extra service.
@@ -253,7 +355,10 @@ def main():
     pid = running_pid(state)
     if args.stop:
         if pid:
-            if active_threads(state):
+            active = active_threads(state, pid)
+            if UNVERIFIED in active:
+                raise RuntimeError('Bridge activity could not be verified, so it was not stopped. A Bridge process without a valid runtime record, including one started by an earlier version, stays unverified until it exits; retrying does not change that. Run codex-claude doctor.')
+            if active:
                 raise RuntimeError('A chat is active. Stop its turn in Codex before restarting the bridge.')
             os.kill(pid, 15)
             deadline = time.monotonic() + 15
