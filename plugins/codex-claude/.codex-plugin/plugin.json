@@ -1,6 +1,6 @@
 {
   "name": "codex-claude",
-  "version": "0.3.0-rc.7",
+  "version": "0.3.0-rc.8",
   "description": "Install, start and diagnose a minimal local Claude Code bridge under the stock Codex desktop app.",
   "author": {
     "name": "Gustav Online"
