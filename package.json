@@ -1,6 +1,6 @@
 {
   "name": "codex-claude-bridge-local",
-  "version": "0.3.0-rc.7",
+  "version": "0.3.0-rc.8",
   "private": true,
   "type": "module",
   "description": "Model Bridge — Claude models beneath the unmodified Codex desktop UI",
