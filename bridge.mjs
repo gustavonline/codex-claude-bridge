@@ -633,6 +633,13 @@ export class Bridge {
       this.emit(`item/${phase}`, { threadId, turnId: turn.id, item: value });
     };
     this.emit('turn/started', { threadId, turn: envelope(turn) });
+    // Announce the turn's own message, as steering does for steered ones. A
+    // queued or session-started turn has no bubble the desktop drew itself;
+    // clientId lets the desktop reconcile one it did draw.
+    const [{ id: messageId, content }] = turn.items;
+    const message = { type: 'userMessage', id: messageId, clientId: params.clientUserMessageId ?? null, content };
+    this.emit('item/started', { threadId, turnId: turn.id, item: message });
+    this.emit('item/completed', { threadId, turnId: turn.id, item: message });
     this.emit('thread/status/changed', { threadId, status: { type: 'active', activeFlags: [] } });
     const partial = new Map(); let latestMessageId; let receivedResult = false;
     try {
