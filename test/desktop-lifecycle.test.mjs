@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { fixture } from './support/fixture.mjs';
@@ -391,7 +392,9 @@ test('each Claude turn announces its own user message once, so a queued message 
     for (const [turnId, clientId, content] of [[first.turn.id, 'synthetic-direct', direct], [started.params.turn.id, 'synthetic-queued', queued]]) {
       const user = announced(turnId);
       assert.deepEqual(user.map(e => e.method), ['item/started', 'item/completed'], clientId);
-      for (const event of user) assert.deepEqual(event.params, { threadId: id, turnId, item: { type: 'userMessage', id: clientId, clientId, content } });
+      // Lifecycle times are checked by the contract test below.
+      for (const { params: { startedAtMs, completedAtMs, ...rest } } of user)
+        assert.deepEqual(rest, { threadId: id, turnId, item: { type: 'userMessage', id: clientId, clientId, content } });
       // turn/started, then the user's message, then Claude's answer.
       const position = predicate => f.events.findIndex(predicate);
       const turnStarted = position(e => e.method === 'turn/started' && e.params.turn.id === turnId);
@@ -426,4 +429,37 @@ test('each Claude turn announces its own user message once, so a queued message 
     assert.deepEqual(announced(fourth.turn.id).map(e => [e.method, e.params.item.id]),
       [['item/started', 'synthetic-interrupted'], ['item/completed', 'synthetic-interrupted']]);
   } finally { release.resolve(); f.close(); }
+});
+
+// Codex CLI 0.163 ItemStartedNotification requires startedAtMs and
+// ItemCompletedNotification requires completedAtMs (int64 Unix milliseconds).
+test('item notifications carry their required Unix-millisecond lifecycle time, and native times are kept', async () => {
+  const f = fixture(), held = gate(), resume = gate();
+  try {
+    const id = await f.start();
+    f.controls.query = async () => { held.resolve(); await resume.promise; };
+    const before = Date.now();
+    const sent = await f.bridge.request('turn/start', { threadId: id, input: [{ type: 'text', text: 'SYNTHETIC TIMED' }], clientUserMessageId: 'synthetic-timed' });
+    await held.promise;
+    await f.bridge.request('turn/steer', { threadId: id, expectedTurnId: sent.turn.id,
+      input: [{ type: 'text', text: 'SYNTHETIC TIMED STEER' }], clientUserMessageId: 'synthetic-timed-steer' });
+    f.controls.query = undefined; resume.resolve(); await f.done(sent.turn.id);
+    const after = Date.now();
+    const items = f.events.filter(e => ['item/started', 'item/completed'].includes(e.method) && e.params.turnId === sent.turn.id);
+    assert.deepEqual([...new Set(items.map(e => e.params.item.type))].sort(), ['agentMessage', 'userMessage'], 'opening, steered and answer items');
+    const started = new Map();
+    for (const { method, params } of items) {
+      const [own, other] = method === 'item/started' ? ['startedAtMs', 'completedAtMs'] : ['completedAtMs', 'startedAtMs'];
+      assert.ok(Number.isInteger(params[own]) && params[own] >= before && params[own] <= after, `${method} ${params.item.id}`);
+      assert.equal(params[other], undefined, `${method} carries only its own lifecycle time`);
+      if (method === 'item/started') started.set(params.item.id, params.startedAtMs);
+      else assert.ok(params.completedAtMs >= started.get(params.item.id), `${params.item.id} completes after it starts`);
+    }
+    // A notification that native already timed is forwarded unchanged.
+    const native = randomUUID(), turnId = randomUUID(), item = { type: 'agentMessage', id: randomUUID(), text: 'SYNTHETIC NATIVE' };
+    await f.bridge.nativeNotification('item/started', { threadId: native, turnId, item, startedAtMs: 1000 });
+    await f.bridge.nativeNotification('item/completed', { threadId: native, turnId, item, completedAtMs: 2000 });
+    assert.deepEqual(f.events.filter(e => e.params.threadId === native).map(e => [e.method, e.params.startedAtMs ?? e.params.completedAtMs]),
+      [['item/started', 1000], ['item/completed', 2000]]);
+  } finally { resume.resolve(); f.close(); }
 });

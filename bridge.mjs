@@ -159,6 +159,11 @@ export class Bridge {
       turns: withTurns ? record.turns.map(publicTurn) : [] };
   }
   emit(method, params) {
+    // The public item notifications carry when the item's lifecycle started or
+    // completed (Unix ms). Keep a value native already supplied; items the Bridge
+    // generates get the time they are announced.
+    if (method === 'item/started' && !Number.isInteger(params.startedAtMs)) params = { ...params, startedAtMs: Date.now() };
+    if (method === 'item/completed' && !Number.isInteger(params.completedAtMs)) params = { ...params, completedAtMs: Date.now() };
     // Archive removes the desktop's subscription while a Claude turn can still
     // finish. Retain its history and internal lifecycle without sending items
     // to a conversation the renderer no longer owns. Unarchive resumes delivery.
