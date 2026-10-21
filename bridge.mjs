@@ -32,8 +32,11 @@ const mergeOptions = (previous, params) => {
 };
 
 export class Bridge {
-  constructor({ native, desktop, statePath, getModels = models, runQuery = startQuery, history = sessionHistory(), log = () => {} }) {
-    Object.assign(this, { native, desktop, statePath, getModels, runQuery, history, log });
+  constructor({ native, desktop, statePath, getModels = models, runQuery = startQuery, history = sessionHistory(), log = () => {}, coordinateNative = false }) {
+    Object.assign(this, { native, desktop, statePath, getModels, runQuery, history, log, coordinateNative });
+    // Unmanaged GPT chats that received the session tools (primary mode only).
+    // Their native host owns them; this keeps only what coordination checks.
+    this.nativeCallers = new Map();
     this.records = new Map(); this.active = new Map(); this.loaded = new Set(); this.starting = new Set();
     this.reverting = new Set();
     this.changing = new Set(); this.pendingStarts = new Map(); this.pendingSteers = new Map(); this.resuming = new Map();
@@ -175,9 +178,15 @@ export class Bridge {
     if (method !== 'item/tool/call' || params.namespace !== sessionNamespace)
       return this.desktop.request(method, params, timeout, signal);
     try {
-      const active = this.active.get(params.threadId);
-      if (!active || params.turnId !== active.turn.id) throw new RpcError('Session tool call does not belong to the active turn', -32602);
-      const result = await sessionCall(this, params, signal ?? this.active.get(params.threadId)?.controller?.signal);
+      const managed = this.records.has(params.threadId), active = this.active.get(params.threadId);
+      // An unmanaged GPT chat's call must come from the native turn the Bridge saw
+      // start and not yet end, in a known workspace. Its lifetime bounds the call.
+      const turn = managed ? null : this.nativeCallers.get(params.threadId)?.turn;
+      if (managed ? !active || params.turnId !== active.turn.id
+        : !turn || turn.id !== params.turnId || turn.controller.signal.aborted || typeof this.nativeCallers.get(params.threadId).thread.cwd !== 'string')
+        throw new RpcError('Session tool call does not belong to the active turn', -32602);
+      const lifetime = managed ? active.controller?.signal : turn.controller.signal;
+      const result = await sessionCall(this, params, signal && lifetime ? AbortSignal.any([signal, lifetime]) : signal ?? lifetime);
       return { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(result) }] };
     } catch (error) { return { success: false, contentItems: [{ type: 'inputText', text: error.message }] }; }
   }
@@ -190,6 +199,10 @@ export class Bridge {
     if (!record && ['turn/started', 'turn/completed'].includes(method))
       this.log(method === 'turn/started' ? 'turn.started' : 'turn.finished', { threadId: params.threadId,
         turnId: params.turn?.id, status: params.turn?.status, provider: 'native', ...(params.turn?.error ? errorMetadata(params.turn.error) : {}) });
+    const caller = record ? undefined : this.nativeCallers.get(params.threadId);
+    if (caller && method === 'turn/started' && typeof params.turn?.id === 'string') this.beginCallerTurn(caller, params.turn.id);
+    if (caller && method === 'turn/completed' && params.turn?.id === caller.turn?.id) this.endCallerTurn(caller, 'The calling turn ended');
+    if (caller && method === 'thread/closed') this.endCallerTurn(caller, 'The calling chat was closed');
     if (this.internalReverts.has(params.threadId) && ['thread/reverted', 'thread/closed', 'thread/status/changed'].includes(method)) {
       if (method === 'thread/reverted') this.internalReverts.get(params.threadId)();
       return;
@@ -214,6 +227,16 @@ export class Bridge {
     });
     if (method === 'thread/settings/updated') {
       const settings = params.threadSettings;
+      if (caller && settings) {
+        Object.assign(caller, { sandbox: settings.sandboxPolicy, approvalPolicy: settings.approvalPolicy,
+          activePermissionProfile: settings.activePermissionProfile ?? null, disabledPluginIds: settings.disabledPluginIds ?? caller.disabledPluginIds });
+        // A native-confirmed workspace applies to later turns. Calls still in a
+        // turn of the previous workspace end rather than continue across it.
+        if (typeof settings.cwd === 'string' && settings.cwd !== caller.cwd) {
+          caller.cwd = settings.cwd;
+          if (caller.turn) this.endCallerTurn(caller, 'The calling chat’s workspace changed');
+        }
+      }
       if (record && settings) {
         record.nativeSettings = clone(settings); record.nativeModel = settings.model; record.nativeEffort = settings.effort;
         record.sandbox = settings.sandboxPolicy; record.approvalPolicy = settings.approvalPolicy;
@@ -298,7 +321,10 @@ export class Bridge {
     record.disabledPluginIds = result.disabledPluginIds;
     this.loaded.add(record.thread.id);
   }
-  async request(method, params = {}) {
+  // internal is only for in-process callers (never desktop or native RPC): for
+  // turn/start, admit() runs synchronously after the last await of turn
+  // preparation, immediately before the message is accepted, and refuses it by throwing.
+  async request(method, params = {}, internal = {}) {
     if (['thread/start', 'thread/resume', 'thread/fork', 'thread/settings/update', 'turn/start'].includes(method)
       && (this.records.has(params.threadId) || isClaude(params.model))
       && params.approvalsReviewer != null && params.approvalsReviewer !== 'user')
@@ -315,7 +341,14 @@ export class Bridge {
     }
     if (method === 'thread/start') {
       const requested = params.model ?? (await this.native.request('config/read', { cwd: params.cwd, includeLayers: false })).config.model;
-      if (!isClaude(requested)) return this.native.request(method, params);
+      if (!isClaude(requested)) {
+        if (!this.coordinateNative) return this.native.request(method, params);
+        // Primary mode: a new GPT chat stays native and GPT-owned, and also
+        // receives the public session tools so it can start and steer Claude chats.
+        const result = await this.native.request(method, withSessionTools(params));
+        this.trackCaller(result, params.config);
+        return result;
+      }
       const model = await this.selectModel(requested);
       const config = (await this.native.request('config/read', { cwd: params.cwd, includeLayers: false })).config;
       const hostModel = isClaude(config.model) ? undefined : config.model;
@@ -357,7 +390,7 @@ export class Bridge {
       if (this.reverting.has(record.thread.id) && ['turn/start', 'thread/revert', 'thread/resume', 'thread/unload', 'thread/unsubscribe', 'thread/archive', 'thread/unarchive'].includes(method))
         throw new RpcError('Wait for the history edit to finish before changing this chat');
       if (method === 'thread/revert') return this.revert(record, params);
-      if (method === 'turn/start') return this.begin(record, params);
+      if (method === 'turn/start') return this.begin(record, params, internal);
       if (method === 'turn/interrupt') {
         const running = this.active.get(params.threadId);
         if (!running && this.starting.has(params.threadId))
@@ -439,14 +472,51 @@ export class Bridge {
         || (method.startsWith('thread/realtime/') && method !== 'thread/realtime/listVoices'))
         throw new RpcError(`${method} is not implemented for Claude chats; the native turn was not started or changed.`, -32601);
     }
+    // Stopping, unloading or archiving an unmanaged GPT chat ends its coordination
+    // at once, before native reports the turn's completion.
+    const caller = record ? undefined : this.nativeCallers.get(params.threadId);
+    if (caller && ((method === 'turn/interrupt' && params.turnId === caller.turn?.id) || ['thread/unload', 'thread/unsubscribe', 'thread/archive'].includes(method)))
+      this.endCallerTurn(caller, 'The calling turn was stopped');
     const result = await this.native.request(method, params);
     if (method === 'initialize') this.mirror?.start();
+    // A reopened or forked unmanaged GPT chat keeps any session tools native gave it.
+    if (['thread/resume', 'thread/fork'].includes(method)) this.trackCaller(result, params.config ?? this.nativeCallers.get(params.threadId)?.options.config);
     if (method === 'mcpServerStatus/list') for (const server of result.data ?? []) this.log('capability.catalog', {
       threadId: params.threadId, server: server.name, status: server.runtimeStatus ?? 'unknown',
       toolCount: Object.keys(server.tools ?? {}).length,
       ...(server.toolsError ? errorMetadata(server.toolsError) : {}),
     });
     return result;
+  }
+  // An unmanaged GPT chat's coordination state. cwd is its latest native-confirmed
+  // workspace (response-level cwd first); thread.cwd is the workspace of its
+  // current turn. Without a known workspace it gets no coordination.
+  trackCaller(result, config) {
+    const thread = result?.thread;
+    if (!this.coordinateNative || !thread?.id || this.records.has(thread.id)) return;
+    const previous = this.nativeCallers.get(thread.id), cwd = result.cwd ?? thread.cwd;
+    if (typeof cwd !== 'string') {
+      if (previous) { this.endCallerTurn(previous, 'The calling chat’s workspace is unknown'); this.nativeCallers.delete(thread.id); }
+      return;
+    }
+    const caller = { thread: { id: thread.id, cwd, ephemeral: !!thread.ephemeral, name: thread.name ?? null }, cwd,
+      options: { config: config ?? {} }, sandbox: result.sandbox, approvalPolicy: result.approvalPolicy,
+      activePermissionProfile: result.activePermissionProfile ?? null, disabledPluginIds: result.disabledPluginIds ?? [], turn: null };
+    if (previous?.turn) {
+      // A reopened chat keeps its running turn only in that turn's workspace.
+      if (previous.thread.cwd === cwd) caller.turn = previous.turn;
+      else this.endCallerTurn(previous, 'The calling chat’s workspace changed');
+    }
+    this.nativeCallers.set(thread.id, caller);
+  }
+  beginCallerTurn(caller, id) {
+    this.endCallerTurn(caller, 'A newer turn started in the calling chat');
+    caller.thread.cwd = caller.cwd;
+    caller.turn = { id, controller: new AbortController() };
+  }
+  endCallerTurn(caller, reason) {
+    caller.turn?.controller.abort(new RpcError(reason));
+    caller.turn = null;
   }
   async resume(record, params) {
     const threadId = record.thread.id;
@@ -550,7 +620,7 @@ export class Bridge {
     return { data: page.data, nextCursor: page.nextCursor ? `after:${id(page.data.at(-1))}` : null,
       backwardsCursor: page.data.length ? `at:${id(page.data[0])}` : null };
   }
-  async begin(record, params) {
+  async begin(record, params, internal = {}) {
     const pendingSteer = [...(this.pendingSteers.get(record.thread.id) ?? [])].find(s => s.params.clientUserMessageId === params.clientUserMessageId && params.clientUserMessageId);
     if (pendingSteer) {
       if (!isDeepStrictEqual(pendingSteer.params.input, params.input)) throw new RpcError('This clientUserMessageId already belongs to a different message.', -32602);
@@ -579,7 +649,7 @@ export class Bridge {
       this.log('turn.prepared', { threadId: record.thread.id, status: 'failed' });
       throw new RpcError(unsafeActivity);
     }
-    const promise = this.prepareTurn(record, params);
+    const promise = this.prepareTurn(record, params, internal);
     this.pendingStarts.set(record.thread.id, { params, promise });
     let accepted;
     try { accepted = await promise; return accepted; }
@@ -589,7 +659,7 @@ export class Bridge {
       if (accepted && !this.active.has(record.thread.id)) continueQueue(this, record, record.turns.at(-1)?.status);
     }
   }
-  async prepareTurn(record, params) {
+  async prepareTurn(record, params, { admit } = {}) {
     if (!Array.isArray(params.input) || !params.input.length) throw new RpcError('input must be non-empty', -32602);
     const mode = params.collaborationMode?.settings;
     const selection = await this.selection(record, params);
@@ -599,10 +669,14 @@ export class Bridge {
     if (selection.provider === 'native') await reloadNativeHost(this, record, selection.model);
     await this.ensureLoaded(record);
     await this.updatePermissions(record, params);
+    // A Claude turn is accepted below without another await, so this is its last
+    // check. A native turn first resets its history; beginNative checks again
+    // after that, immediately before dispatch.
+    admit?.();
     this.applySelection(record, selection);
     if (params.approvalPolicy) record.approvalPolicy = params.approvalPolicy;
     if (mode) record.modeInstructions = mode.developer_instructions;
-    if (record.provider === 'native') return beginNative(this, record, params);
+    if (record.provider === 'native') return beginNative(this, record, params, admit);
     const additionalContext = !record.claudeSessionId && record.turns.length ? handoffContext(record.turns, params.additionalContext) : params.additionalContext;
     const turn = { id: randomUUID(), claudePromptId: randomUUID(), status: 'inProgress', startedAt: now(), completedAt: null, error: null,
       items: [{ id: params.clientUserMessageId ?? randomUUID(), type: 'userMessage', content: params.input }], itemsView: 'full', provider: 'claude' };
@@ -771,7 +845,7 @@ async function main() {
     request: (method, params) => bridge.toolRequest(method, params),
     notify: (method, params) => bridge.nativeNotification(method, params), close: () => desktop.end(),
   });
-  bridge = new Bridge({ native, desktop, statePath: process.env.BRIDGE_STATE, log });
+  bridge = new Bridge({ native, desktop, statePath: process.env.BRIDGE_STATE, log, coordinateNative: process.env.BRIDGE_COORDINATOR === '1' });
   if (process.env.BRIDGE_SOURCE_CODEX_HOME && process.env.BRIDGE_MIRROR !== '0') bridge.mirror = configurationMirror({
     native, source: process.env.BRIDGE_SOURCE_CODEX_HOME, state: dirname(process.env.BRIDGE_STATE), log,
     notify: (method, params) => desktop.notify(method, params),

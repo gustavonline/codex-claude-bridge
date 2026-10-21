@@ -1,16 +1,17 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "codex-claude",
-  "version": "0.3.0-rc.10",
+  "version": "0.3.0-rc.11",
   "description": "Install, start and diagnose a minimal local Claude Code bridge under the stock Codex desktop app.",
   "extensions": {
     "com.openai": {
       "interface": {
         "displayName": "Model Bridge",
         "shortDescription": "Claude models in Codex",
-        "longDescription": "Keep the Codex desktop interface and add Claude models through your installed, unmodified Claude Code runtime. Two skills set up or diagnose the small local adapter. One Codex configuration, lazy tools and skills, isolated chats, and metadata-only diagnostics. An independent Gustav Online preview; not an OpenAI or Anthropic product.",
+        "longDescription": "Keep the Codex desktop interface and add Claude models through your installed, unmodified Claude Code runtime. Two skills set up or diagnose the small local adapter, and a read-only Home view shows what is installed and the next step. One Codex configuration, lazy tools and skills, isolated chats, and metadata-only diagnostics. An independent Gustav Online preview; not an OpenAI or Anthropic product.",
         "developerName": "Gustav Online",
         "category": "Developer Tools",
+        "capabilities": ["Interactive"],
         "defaultPrompt": [
           "Install and start Claude in Codex.",
           "Check my Codex + Claude installation."

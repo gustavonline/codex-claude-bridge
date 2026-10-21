@@ -15,7 +15,7 @@ Keep the interface you use: model picker, conversations, browser and file panels
 - Read and coordinate bridge chats through one small session adapter.
 - Diagnose failures with correlated, rotating logs that omit message and credential content.
 
-No replacement UI, model API proxy, extra service or permanent daemon. The adapter lives and exits with the isolated app. AIOS is an optional inherited plugin, not a dependency.
+No replacement UI, model API proxy, extra service or permanent daemon. The adapter lives and exits with the Codex app it was opened with. AIOS is an optional inherited plugin, not a dependency.
 
 ## Install
 
@@ -23,7 +23,9 @@ Requires macOS, Node.js 22 or newer, Python 3.11 or newer, and a compatible Code
 
 Download the installer ZIP from [Releases](https://github.com/gustavonline/codex-claude-bridge/releases), extract it, and run `Install Model Bridge.command`. Preview releases may be marked prerelease. A source checkout can produce the same package with `npm run bundle -- --pin`.
 
-Alternatively, install the **Model Bridge** plugin ZIP, then ask its `setup` skill to start setup. The plugin has two skills: setup and diagnose. Installing the skills alone does not execute scripts or start a daemon.
+Alternatively, install the **Model Bridge** plugin ZIP, then ask its `setup` skill to start setup. The plugin has two skills: setup and diagnose. Installing the skills alone does not execute scripts or start a daemon. The current RC10 release installs and opens only the separate test window described below.
+
+The unreleased RC11 source (0.3.0-rc.11) also registers a read-only plugin Home view, a small local MCP server started with Codex's plugin tools. Its installer prepares both launchers and opens neither. Neither is in the RC10 release, and loading or showing Home in Codex has not been tested (see [Support](docs/support.md)).
 
 The existing launcher is `~/Applications/Codex + Claude.command`; the stable CLI name is `codex-claude`:
 
@@ -36,6 +38,23 @@ codex-claude stop
 ```
 
 If the command is not on PATH, use `~/.local/share/codex-claude-bridge/node_modules/.bin/codex-claude`. Select a different app or existing isolated profile with `setup --app /path/to/Codex.app --state /path/to/profile`.
+
+### Claude in your normal Codex app (source preview, not released)
+
+Unreleased source adds an opt-in launcher for the normal Codex app, with your usual profile, chats and settings. It is a plugin plus a startup helper, not a plugin-only or permanent setting: Codex opened from the Dock, Spotlight or at login stays GPT-only.
+
+```sh
+codex-claude primary          # or open ~/Applications/Codex + Claude (main app).command
+codex-claude primary status
+```
+
+`setup` creates the double-click launcher. Quit Codex yourself once its chats are idle, then use it. It refuses while any copy of Codex runs or when that cannot be checked, and it never quits or restarts Codex. It checks that the app is the code-signed Codex app (com.openai.codex). It then opens that unchanged app once through macOS (`open -a … --env CODEX_CLI_PATH=…`), with a private startup script under the Bridge state as its app-server. The script starts the Bridge in front of the app's own bundled Codex CLI. Nothing is copied into or changed in your Codex profile or configuration; the setting applies until Codex quits. The Bridge keeps its own Claude transcripts and logs under `<state>/primary`.
+
+GPT remains the default; Claude appears in the model picker. New GPT chats also receive the Bridge's session tools. During a GPT turn, GPT can start a real Codex chat running Claude in the same workspace, with the same permissions, and read, message, queue, interrupt or fork it. Each step follows the chat's approval policy, and stopping the GPT turn ends any step still pending, including a message not yet accepted. A created chat's first message is sent at most once, also across Codex windows, and only to Claude: if you switch that chat to GPT before its first message, retries are refused until you select Claude again. When delivery cannot be confirmed, a retry is refused and the chat is left for you to check. To return to GPT-only Codex, quit it when idle and open it normally. Claude chats created this way then show only their native placeholder history until Codex is opened with the launcher again.
+
+Updating the Bridge requires that Codex opened with this launcher (and the separate test window) has been quit; the installer checks this and refuses otherwise, without quitting anything. Main-app logs are under `<state>/primary/logs`; `doctor` and `logs` read the separate window's state.
+
+This mode has synthetic startup and protocol tests only. It has not been run on a Mac.
 
 ## One configuration
 

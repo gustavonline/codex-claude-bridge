@@ -22,6 +22,9 @@ case "$1" in
   --version) echo '${version}';;
   check) echo "check\${BRIDGE_TEST_VERSIONED:+ ${version}}" >> "$BRIDGE_TEST_LOG"; [ "$BRIDGE_TEST_FAILURE" != check ];;
   stop) echo "stop\${BRIDGE_TEST_VERSIONED:+ ${version}}" >> "$BRIDGE_TEST_LOG"; [ "$BRIDGE_TEST_FAILURE" != busy ];;
+  primary) echo "primary $2\${BRIDGE_TEST_VERSIONED:+ ${version}}" >> "$BRIDGE_TEST_LOG"
+    [ "$3 $4" = "--payload $BRIDGE_TEST_HOME/.local/share/codex-claude-bridge/node_modules/codex-claude-bridge-local" ] || exit 9
+    [ "$BRIDGE_TEST_FAILURE" != primary-running ];;
   setup) echo setup >> "$BRIDGE_TEST_LOG"; [ "$BRIDGE_TEST_FAILURE" != setup ];;
   *) echo start >> "$BRIDGE_TEST_LOG";;
 esac
@@ -48,16 +51,38 @@ echo npm >> "$BRIDGE_TEST_LOG"
   };
 }
 
-test('installer verifies and stages before stopping, retains recovery package, and reuses an installed version', () => {
+test('installer verifies and stages before stopping, retains recovery package, reuses an installed version and opens no window', () => {
   const f = fixture();
   try {
     const run = f.run(); assert.equal(run.status, 0, run.stderr);
-    assert.deepEqual(f.events(), ['npm', 'check', 'stop', 'setup', 'start']);
+    assert.deepEqual(f.events(), ['npm', 'check', 'primary stopped', 'stop', 'setup']);
     assert.equal(f.version(), '0.3.0-rc.1');
     assert.ok(existsSync(join(f.parent, 'codex-claude-bridge.previous/node_modules/.bin/codex-claude')));
-    assert.equal(f.run().status, 0); assert.deepEqual(f.events().slice(-2), ['setup', 'start']);
+    assert.equal(f.run().status, 0); assert.deepEqual(f.events().slice(-1), ['setup']);
     assert.equal(f.events().filter(e => e === 'npm').length, 1);
+    assert.ok(!f.events().includes('start'), 'neither launcher is opened by the installer');
   } finally { f.close(); }
+});
+
+test('a running or unknown main-app Bridge refuses replacement before anything is stopped; quitting Codex allows a retry', () => {
+  const f = fixture();
+  try {
+    const profile = join(f.home, 'profile/conversation.json'); f.put(profile, 'KEEP_USER_HISTORY');
+    // The staged CLI exits nonzero both when a Bridge runs and when that cannot be checked.
+    const refused = f.run('primary-running'); assert.notEqual(refused.status, 0);
+    assert.deepEqual(f.events(), ['npm', 'check', 'primary stopped'], 'nothing is stopped, quit or replaced');
+    assert.equal(f.version(), '0.2.1'); assert.equal(readFileSync(profile, 'utf8'), 'KEEP_USER_HISTORY');
+    assert.equal(existsSync(join(f.parent, '.codex-claude-install-lock')), false);
+    assert.equal(existsSync(join(f.parent, 'codex-claude-bridge.previous')), false);
+    const retried = f.run(); assert.equal(retried.status, 0, retried.stderr);
+    assert.equal(f.version(), '0.3.0-rc.1');
+  } finally { f.close(); }
+  const fresh = fixture();
+  try {
+    rmSync(fresh.install, { recursive: true });
+    const run = fresh.run('primary-running'); assert.equal(run.status, 0, run.stderr);
+    assert.ok(!fresh.events().some(e => e.startsWith('primary')), 'a first installation has no installed package to check');
+  } finally { fresh.close(); }
 });
 
 test('installer preflight/busy failures leave the old package usable; post-replacement setup failure restores it', () => {
@@ -112,7 +137,7 @@ echo download >> "$BRIDGE_TEST_LOG"
 cp "$BRIDGE_TEST_HOME/download.tgz" "$bridge_test_output"
 `, 0o700);
     const run = f.run(); assert.equal(run.status, 0, run.stderr);
-    assert.deepEqual(f.events(), ['download', 'npm', 'check', 'stop', 'setup', 'start']);
+    assert.deepEqual(f.events(), ['download', 'npm', 'check', 'primary stopped', 'stop', 'setup']);
     f.put(join(f.bin, 'gh'), '#!/bin/sh\nexit 1\n', 0o700);
     f.put(join(f.bin, 'curl'), `#!/bin/sh
 while [ "$#" -gt 0 ]; do
@@ -122,7 +147,7 @@ done
 echo public-download >> "$BRIDGE_TEST_LOG"
 cp "$BRIDGE_TEST_HOME/download.tgz" "$bridge_test_output"
 `, 0o700);
-    assert.equal(f.run().status, 0); assert.deepEqual(f.events().slice(-3), ['public-download', 'setup', 'start']);
+    assert.equal(f.run().status, 0); assert.deepEqual(f.events().slice(-2), ['public-download', 'setup']);
   } finally { f.close(); }
 });
 
@@ -130,12 +155,12 @@ test('an upgrade checks the staged CLI but stops through the installed one, whos
   const f = fixture();
   try {
     const run = f.run('', { BRIDGE_TEST_VERSIONED: '1' }); assert.equal(run.status, 0, run.stderr);
-    assert.deepEqual(f.events().slice(0, 3), ['npm', 'check 0.3.0-rc.1', 'stop 0.2.1'],
-      'the previous version decides whether the running app is idle');
+    assert.deepEqual(f.events().slice(0, 4), ['npm', 'check 0.3.0-rc.1', 'primary stopped 0.3.0-rc.1', 'stop 0.2.1'],
+      'the staged version checks the main-app Bridge; the previous version decides whether its separate window is idle');
   } finally { f.close(); }
   const busy = fixture();
   try {
     assert.notEqual(busy.run('busy', { BRIDGE_TEST_VERSIONED: '1' }).status, 0);
-    assert.deepEqual(busy.events(), ['npm', 'check 0.3.0-rc.1', 'stop 0.2.1']); assert.equal(busy.version(), '0.2.1');
+    assert.deepEqual(busy.events(), ['npm', 'check 0.3.0-rc.1', 'primary stopped 0.3.0-rc.1', 'stop 0.2.1']); assert.equal(busy.version(), '0.2.1');
   } finally { busy.close(); }
 });

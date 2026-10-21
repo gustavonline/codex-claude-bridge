@@ -29,8 +29,12 @@ export async function resetNativeHistory(bridge, record) {
   }
 }
 
-export async function beginNative(bridge, record, params) {
+export async function beginNative(bridge, record, params, admit) {
   await resetNativeHistory(bridge, record);
+  // The history reset is this path's last await before dispatch: check the
+  // caller's admission again here (bridge.prepareTurn). A refusal leaves the
+  // reset in place, which the next native turn needs anyway.
+  admit?.();
   // The public client ID is optional. Give our provisional item and the native
   // host the same identity even when the caller supplies none.
   params = { ...params, clientUserMessageId: params.clientUserMessageId ?? randomUUID() };
