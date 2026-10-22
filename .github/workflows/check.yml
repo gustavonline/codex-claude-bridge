@@ -29,6 +29,13 @@ jobs:
           BRIDGE_CLAUDE: /nonexistent/unit-test-must-not-start-claude
       - run: npm run bundle -- --check
       - run: npm run test:distribution
+      # Every final artifact (outer and nested entries), then the exact checked bytes.
+      - name: Check final artifacts
+        timeout-minutes: 5
+        run: node scripts/check-artifacts.mjs
+      - name: Verify the checked artifacts are unchanged
+        timeout-minutes: 2
+        run: node scripts/check-artifacts.mjs --verify
   checks:
     if: always()
     needs: test
