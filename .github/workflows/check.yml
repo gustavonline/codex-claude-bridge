@@ -1,12 +1,73 @@
 name: Bridge checks
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+  pull_request:
+    # The default activities, plus labeled for the owner's qualification opt-in.
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+    inputs:
+      qualification:
+        description: Run the package and final-artifact path on the selected branch (diagnostic; does not qualify a pull request)
+        type: choice
+        options: [source-only, full-artifacts]
+        default: source-only
 concurrency:
   group: checks-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 permissions:
   contents: read
 jobs:
+  # Pushes and ordinary pull-request runs never build packages. The package and
+  # final-artifact path runs only when:
+  # - the repository owner newly adds the exact full-artifact-qualification label
+  #   to a pull request whose head and base are this repository (this event's
+  #   merge commit; a later head needs a fresh owner action), or
+  # - a manual full-artifacts run is started (diagnostic, on the selected branch).
+  # Owner and repositories are matched by GitHub's numeric IDs, never by PR text.
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      full: ${{ steps.select.outputs.full }}
+    steps:
+      - name: Select the package and final-artifact path
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          SENDER_ID: ${{ github.event.sender.id }}
+          OWNER_ID: ${{ github.repository_owner_id }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          HEAD_REPOSITORY_ID: ${{ github.event.pull_request.head.repo.id }}
+          BASE_REPOSITORY_ID: ${{ github.event.pull_request.base.repo.id }}
+          REQUESTED: ${{ inputs.qualification }}
+        run: |
+          full=false
+          if [ "$EVENT" = pull_request ] && [ "$ACTION" = labeled ] && [ "$LABEL" = full-artifact-qualification ] \
+            && [ -n "$OWNER_ID" ] && [ "$SENDER_ID" = "$OWNER_ID" ] \
+            && [ -n "$REPOSITORY_ID" ] && [ "$HEAD_REPOSITORY_ID" = "$REPOSITORY_ID" ] && [ "$BASE_REPOSITORY_ID" = "$REPOSITORY_ID" ]; then full=true; fi
+          if [ "$EVENT" = workflow_dispatch ] && [ "$REQUESTED" = full-artifacts ]; then full=true; fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "Package and final-artifact path selected: $full"
+  # Source and CI proof only: no install, package, bundle, artifact scan or upload.
+  source:
+    name: Source and CI checks, no packages
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Check the CI event guard and required aggregate
+        run: node --test test/ci.test.mjs
   test:
+    needs: select
+    if: needs.select.outputs.full == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -29,12 +90,28 @@ jobs:
           BRIDGE_CLAUDE: /nonexistent/unit-test-must-not-start-claude
       - run: npm run bundle -- --check
       - run: npm run test:distribution
+      # Every final artifact (outer and nested entries), then the exact checked bytes.
+      - name: Check final artifacts
+        timeout-minutes: 5
+        run: node scripts/check-artifacts.mjs
+      - name: Verify the checked artifacts are unchanged
+        timeout-minutes: 2
+        run: node scripts/check-artifacts.mjs --verify
+  # The required aggregate: green only when the full package and final-artifact
+  # path ran and passed on every platform. A source-only, skipped, cancelled,
+  # failed or missing result leaves it failing, never skipped.
   checks:
     if: always()
-    needs: test
+    needs: [select, source, test]
     runs-on: ubuntu-latest
     steps:
-      - name: Require every test platform
+      - name: Require the package and final-artifact path on every test platform
         env:
+          SELECTED: ${{ needs.select.result }}
+          FULL: ${{ needs.select.outputs.full }}
+          SOURCE: ${{ needs.source.result }}
           RESULT: ${{ needs.test.result }}
-        run: test "$RESULT" = success
+        run: |
+          if [ "$SELECTED" = success ] && [ "$FULL" = true ] && [ "$SOURCE" = success ] && [ "$RESULT" = success ]; then exit 0; fi
+          echo "::error::Required checks unsatisfied: package and final-artifact path ${FULL:-unselected}, result ${RESULT:-missing}; source checks ${SOURCE:-missing}."
+          exit 1
