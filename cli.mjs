@@ -17,6 +17,9 @@ codex-claude setup                   Check setup and create a double-click launc
 codex-claude status                  Show whether this isolated app is running
 codex-claude check                   Verify installed runtime/protocol compatibility
 codex-claude stop | restart          Stop/restart only when its chats are idle
+codex-claude primary [status]        Open your normal Codex app once with Claude (opt-in;
+                                     refuses while Codex runs; quit Codex yourself when idle)
+codex-claude primary stopped         Exit nonzero unless no Bridge from this installation runs
 codex-claude doctor [chat-link]      Save a private, content-free diagnosis
 codex-claude logs [chat-link]        Print the latest 160 metadata events
 
@@ -49,8 +52,10 @@ export function findPython() {
 
 function launch(config, flags = []) {
   if (process.platform !== 'darwin') throw new Error('This bridge currently supports macOS only.');
-  if (!config.app) throw new Error('Codex desktop was not found. Select it with --app /path/to/Codex.app.');
-  const result = spawnSync(findPython(), [join(root, 'launch.py'), '--state', config.state, '--source', config.source, '--app', config.app, ...flags],
+  // Only the stopped check (used before replacing the package) needs no app.
+  if (!config.app && !flags.includes('--stopped')) throw new Error('Codex desktop was not found. Select it with --app /path/to/Codex.app.');
+  const result = spawnSync(findPython(), [join(root, 'launch.py'), '--state', config.state, '--source', config.source,
+    ...(config.app ? ['--app', config.app] : []), ...flags],
     { encoding: 'utf8', timeout: 120000, maxBuffer: 1024 * 1024 });
   if (result.status !== 0) {
     // No raw Python traceback/config/environment output goes into diagnostics.
@@ -68,26 +73,67 @@ function remember(config, home = homedir()) {
 }
 
 const quote = text => `'${text.replaceAll("'", "'\\''")}'`;
-export function shortcut(config, home = homedir()) {
-  const path = join(home, 'Applications/Codex + Claude.command');
+// Double-click launchers. The main-app one only opens Codex when it is not
+// running; it never quits or restarts it.
+export function shortcut(config, home = homedir(), { name = 'Codex + Claude', command = [] } = {}) {
+  const path = join(home, `Applications/${name}.command`);
   const marker = '# Managed by codex-claude-bridge';
-  if (existsSync(path) && !readFileSync(path, 'utf8').includes(marker)) throw new Error('An unrelated Codex + Claude.command already exists; it was left unchanged.');
+  if (existsSync(path) && !readFileSync(path, 'utf8').includes(marker)) throw new Error(`An unrelated ${name}.command already exists; it was left unchanged.`);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `#!/bin/sh\n${marker}\nexec ${quote(process.execPath)} ${quote(join(root, 'cli.mjs'))}\n`, { mode: 0o700 });
+  writeFileSync(path, `#!/bin/sh\n${marker}\nexec ${[process.execPath, join(root, 'cli.mjs'), ...command].map(quote).join(' ')}\n`, { mode: 0o700 });
   chmodSync(path, 0o700); return path;
+}
+export const primaryShortcut = { name: 'Codex + Claude (main app)', command: ['primary'] };
+
+// Runs the protocol compatibility check (temporary isolated profile, no model
+// prompts) when versions changed since the last passing check, or when forced.
+async function compatible(config, preflight, values, force = false) {
+  const versions = { bridgeVersion: version, app: preflight.appVersion, codex: preflight.codexVersion, claude: preflight.claudeVersion,
+    node: preflight.nodeVersion, sdk: JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).dependencies['@anthropic-ai/claude-agent-sdk'] };
+  const path = join(config.state, 'diagnostics/compatibility.json');
+  let last;
+  try { last = JSON.parse(readFileSync(path, 'utf8')); } catch {}
+  if (!force && last?.passed && JSON.stringify(last.versions) === JSON.stringify(versions)) return { ...last, path };
+  if (!values.json) console.log('Checking Codex and Claude compatibility (no model prompts)…');
+  const report = await compatibilityCheck(config, findPython(), versions);
+  saveReport(path, report);
+  if (!report.passed) throw new Error(`Compatibility check failed after ${report.checks.length} checks. Diagnosis: ${path}`);
+  return { ...report, path };
 }
 
 export async function main(args = process.argv.slice(2)) {
   const { values, positionals } = parseArgs({ args, allowPositionals: true, options: {
     state: { type: 'string' }, source: { type: 'string' }, app: { type: 'string' },
     report: { type: 'string' }, json: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'v' },
+    payload: { type: 'string' },
   } });
   if (values.help) { console.log(help); return; }
   if (values.version) { console.log(version); return; }
   const [command = 'start', selected, ...extra] = positionals;
-  if (!['start', 'setup', 'stop', 'restart', 'status', 'check', 'doctor', 'logs'].includes(command) || extra.length
-    || (selected && !['doctor', 'logs'].includes(command))) throw new Error('Unknown command or arguments. Run codex-claude --help.');
+  if (!['start', 'setup', 'stop', 'restart', 'status', 'check', 'doctor', 'logs', 'primary'].includes(command) || extra.length
+    || (selected && !['doctor', 'logs', 'primary'].includes(command)) || (command === 'primary' && selected && !['status', 'stopped'].includes(selected))
+    || (values.payload && !(command === 'primary' && selected === 'stopped')))
+    throw new Error('Unknown command or arguments. Run codex-claude --help.');
   const config = configuration(values);
+  if (command === 'primary') {
+    // Used by the installer before it replaces a package: exits nonzero unless no
+    // Bridge from that package runs. It never stops Codex.
+    if (selected === 'stopped') {
+      const result = launch(config, ['--primary', '--stopped', ...(values.payload ? ['--payload', resolve(values.payload)] : [])]);
+      console.log(values.json ? JSON.stringify(result) : 'No Codex + Claude Bridge from this installation is running.');
+      return;
+    }
+    if (selected === 'status') {
+      const status = launch(config, ['--primary', '--status']);
+      console.log(values.json ? JSON.stringify(status) : `Codex: ${status.running === null ? 'unknown' : status.running ? 'running' : 'not running'}; Claude Bridge: ${status.bridge === null ? 'unknown' : status.bridge ? 'active' : 'not active'}.`);
+      return;
+    }
+    const preflight = launch(config, ['--check', '--primary']);
+    await compatible(config, preflight, values);
+    const result = launch(config, ['--primary']);
+    console.log(values.json ? JSON.stringify(result) : 'Codex opened with Claude. GPT stays the default; choose Claude in the model picker. This applies until Codex quits.');
+    return;
+  }
   if (command === 'logs') {
     for (const entry of readLogs(config.state, { thread: threadId(selected) }).entries.slice(-160)) console.log(JSON.stringify(entry));
     return;
@@ -112,24 +158,15 @@ export async function main(args = process.argv.slice(2)) {
   }
   if (command === 'setup') {
     const check = launch(config, ['--check']);
-    remember(config); const path = shortcut(config);
-    console.log(values.json ? JSON.stringify({ ...check, shortcut: path, state: config.state }) : `Ready. Run codex-claude or open ${path}`);
+    remember(config); const path = shortcut(config), primary = shortcut(config, homedir(), primaryShortcut);
+    console.log(values.json ? JSON.stringify({ ...check, shortcut: path, primaryShortcut: primary, state: config.state })
+      : `Ready. Run codex-claude or open ${path} for the separate test window.\nFor Claude in your normal Codex app, quit Codex once its chats are idle and open ${primary}.`);
     return;
   }
   if (['start', 'restart', 'check'].includes(command)) {
     const preflight = launch(config, ['--check']);
-    const versions = { bridgeVersion: version, app: preflight.appVersion, codex: preflight.codexVersion, claude: preflight.claudeVersion,
-      node: preflight.nodeVersion, sdk: JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).dependencies['@anthropic-ai/claude-agent-sdk'] };
-    const path = join(config.state, 'diagnostics/compatibility.json');
-    let last;
-    try { last = JSON.parse(readFileSync(path, 'utf8')); } catch {}
-    if (command === 'check' || !last?.passed || JSON.stringify(last.versions) !== JSON.stringify(versions)) {
-      if (!values.json) console.log('Checking Codex and Claude compatibility (no model prompts)…');
-      const report = await compatibilityCheck(config, findPython(), versions);
-      saveReport(path, report);
-      if (!report.passed) throw new Error(`Compatibility check failed after ${report.checks.length} checks. Diagnosis: ${path}`);
-      if (command === 'check') { console.log(values.json ? JSON.stringify(report) : `Compatibility checks passed. Report: ${path}`); return; }
-    }
+    const report = await compatible(config, preflight, values, command === 'check');
+    if (command === 'check') { console.log(values.json ? JSON.stringify(report) : `Compatibility checks passed. Report: ${report.path}`); return; }
     if (command === 'restart') launch(config, ['--stop']);
     const result = launch(config);
     if (!existsSync(settingsPath())) remember(config);

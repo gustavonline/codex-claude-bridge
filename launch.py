@@ -165,7 +165,7 @@ def claude_path():
     return shutil.which('claude') or next((str(p) for p in [Path.home() / '.local/bin/claude', Path('/opt/homebrew/bin/claude'), Path('/usr/local/bin/claude')] if p.is_file()), None)
 
 
-def preflight(state, source, app):
+def preflight(state, source, app, *, primary=False):
     validate_paths(state, source)
     if not source.is_dir():
         raise RuntimeError('Codex source profile was not found. Start Codex normally once, or select --source.')
@@ -198,7 +198,8 @@ def preflight(state, source, app):
     config_file = source / 'config.toml'
     config = tomllib.loads(config_file.read_text()) if config_file.exists() else {}
     provider = config.get('model_providers', {}).get(config.get('model_provider'), {})
-    missing_key = bool(provider.get('env_key') and not os.environ.get(provider['env_key']))
+    # The primary app is opened by macOS with its usual environment, not this shell's.
+    missing_key = not primary and bool(provider.get('env_key') and not os.environ.get(provider['env_key']))
     if missing_key:
         raise RuntimeError('The configured GPT provider environment key is missing. Launch from the same configured environment as Codex; do not copy the key into bridge files.')
     with (app / 'Contents/Info.plist').open('rb') as f:
@@ -225,19 +226,27 @@ def rebase_config(text, source, isolated):
     return updated
 
 
-def wrapper_script(node, real, state, source, claude):
+def wrapper_script(node, real, state, source, claude, *, primary=False, isolated=None):
     # Native plugins reuse CODEX_CLI_PATH for helper subcommands in a restricted
     # environment. They must exec the real binary directly, without a Node
     # intermediary or any dependence on inherited BRIDGE_* variables.
-    settings = {'BRIDGE_REAL_CODEX': str(real), 'BRIDGE_STATE': str(state / 'threads'),
-                'BRIDGE_SOURCE_CODEX_HOME': str(source), 'BRIDGE_CLAUDE': claude}
+    # Primary mode has no copied profile to mirror; its GPT chats get the session tools.
+    settings = {'BRIDGE_REAL_CODEX': str(real), 'BRIDGE_STATE': str(state / 'threads'), 'BRIDGE_CLAUDE': claude,
+                **({'BRIDGE_COORDINATOR': '1'} if primary else {'BRIDGE_SOURCE_CODEX_HOME': str(source)})}
+    # The primary Bridge must never serve the separate test profile, even if its
+    # settings were inherited: it refuses to start rather than select that profile.
+    refuse = ''.join(
+        f'case "${{{key}:-}}" in {shlex.quote(str(path))}|{shlex.quote(str(path))}/*)\n'
+        '  echo "Codex + Claude: this app was given the separate test profile, so the Bridge did not start." >&2; exit 78;;\nesac\n'
+        for key, path in [('CODEX_HOME', isolated / 'codex'), ('CODEX_ELECTRON_USER_DATA_PATH', isolated / 'desktop')]) if primary and isolated else ''
     return ('#!/bin/sh\nbridge_app_server=\n'
             'for bridge_argument do\n'
             '  if [ "$bridge_argument" = app-server ]; then bridge_app_server=1; fi\n'
             'done\n'
             'if [ "$bridge_app_server" != 1 ]; then\n'
             '  export CODEX_CLI_PATH=' + shlex.quote(str(real)) + '\n'
-            '  exec ' + shlex.quote(str(real)) + ' "$@"\nfi\n' +
+            '  exec ' + shlex.quote(str(real)) + ' "$@"\nfi\n' + refuse +
+            ('unset BRIDGE_SOURCE_CODEX_HOME BRIDGE_MIRROR\n' if primary else 'unset BRIDGE_COORDINATOR\n') +
             ''.join('export ' + key + '=' + shlex.quote(value) + '\n' for key, value in settings.items()) +
             'exec ' + shlex.quote(node) + ' ' + shlex.quote(str(ROOT / 'bridge.mjs')) + ' "$@"\n')
 
@@ -328,6 +337,231 @@ def prepare(state, source, app, *, copy_auth=True):
     return env, executable, wrapper
 
 
+PRIMARY_BUNDLE_ID = 'com.openai.codex'
+OPEN = '/usr/bin/open'
+CODESIGN = '/usr/bin/codesign'
+PRIMARY_START_SECONDS = 30
+# Signed CLI layouts inside the app, newest first.
+CLI_LAYOUTS = ['Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex', 'Contents/Resources/codex']
+
+
+def primary_app(app):
+    """The selected app's identity, main executable and bundled CLI, unchanged and signed."""
+    try:
+        with (app / 'Contents/Info.plist').open('rb') as f:
+            info = plistlib.load(f)
+    except (OSError, plistlib.InvalidFileException):
+        raise RuntimeError('The selected app could not be read. Select the Codex app with --app.') from None
+    if info.get('CFBundleIdentifier') != PRIMARY_BUNDLE_ID or not isinstance(info.get('CFBundleExecutable'), str):
+        raise RuntimeError('The selected app is not the Codex desktop app (com.openai.codex). Select it with --app.')
+    executable = app / 'Contents/MacOS' / info['CFBundleExecutable']
+    real = next((app / p for p in CLI_LAYOUTS if (app / p).is_file() and os.access(app / p, os.X_OK)), None)
+    if not executable.is_file() or not real:
+        raise RuntimeError('This app does not contain its bundled Codex CLI. Select the Codex app with --app.')
+    try:
+        signed = subprocess.run([CODESIGN, '--verify', '--strict', str(app)], capture_output=True, timeout=120).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        signed = False
+    if not signed:
+        raise RuntimeError('The selected app failed its code-signature check, so it was not opened.')
+    return executable, real
+
+
+def process_table():
+    """pid -> (parent pid, full command). Wide output, so commands are not truncated."""
+    result = subprocess.run(['ps', '-axww', '-o', 'pid=,ppid=,command='], capture_output=True, text=True, timeout=5,
+                            env={**os.environ, 'LC_ALL': 'C'}, check=True)
+    table = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) >= 2 and fields[0].isdigit() and fields[1].isdigit():
+            table[int(fields[0])] = (int(fields[1]), fields[2] if len(fields) == 3 else '')
+    return table
+
+
+def app_processes(executable, table=None):
+    """PIDs of any running copy of this app (main process or bundled helpers), or None if unknown."""
+    try:
+        table = process_table() if table is None else table
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    bundle = str(executable.parent.parent.parent) + '/'
+    name = re.escape('/Contents/MacOS/' + executable.name)
+    return {pid: command for pid, (_, command) in table.items()
+            if pid != os.getpid() and (command.startswith(bundle) or re.search(name + r'(?:\s|$)', command))}
+
+
+def primary_bridges(root, table):
+    """Live processes running this checkout's bridge.mjs whose runtime record is in this state."""
+    directory, program = root / 'runtime', str(ROOT / 'bridge.mjs')
+    if directory.is_symlink():
+        raise OSError('Runtime directory is a symlink')
+    found = {}
+    for name in os.listdir(directory) if directory.is_dir() else []:
+        match = RUNTIME_RECORD.fullmatch(name)
+        pid = int(match[1]) if match else None
+        if pid in table and program in table[pid][1]:
+            try:
+                found[pid] = runtime_record(directory / name, pid, match[2])
+            except (OSError, ValueError):
+                found[pid] = None  # Live, but its record is unreadable.
+    return found
+
+
+def write_private(path, text):
+    # A fresh file renamed into place: an existing link is replaced, not followed.
+    temp = path.with_name(f'.{path.name}.{os.getpid()}.tmp')
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o700)
+    with os.fdopen(fd, 'w') as f:
+        f.write(text)
+    os.replace(temp, path)
+
+
+def process_start(pid):
+    """A live process's start time (Unix seconds) from public `ps`, or None if unknown."""
+    try:
+        result = subprocess.run(['ps', '-o', 'lstart=', '-p', str(pid)], capture_output=True, text=True, timeout=3,
+                                env={**os.environ, 'LC_ALL': 'C'})
+        return time.mktime(time.strptime(result.stdout.strip(), '%a %b %d %H:%M:%S %Y')) if result.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def primary_bridge(executable, root, since=None):
+    """(primary app pid, this state's Bridge running under it); None means unknown.
+
+    Only a process that runs this checkout's bridge.mjs, descends from the one
+    primary app process and published a current record in this state counts:
+    the record's start time matches that process's actual start (so a stale
+    record or a reused PID does not), its lease is fresh and it is not stopping.
+    With since, the Bridge must also have started after that launch time.
+    Evidence that is unreadable, unconfirmable, expired or stopping is unknown.
+    """
+    try:
+        table = process_table()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None, None
+    main = [pid for pid, command in app_processes(executable, table).items()
+            if (command == str(executable) or command.startswith(str(executable) + ' ')) and '--user-data-dir=' not in command]
+    if len(main) != 1:
+        return None, False
+    try:
+        bridges = primary_bridges(root, table)
+    except OSError:
+        return main[0], None
+    parents = {pid: parent for pid, (parent, _) in table.items()}
+    observed = False
+    for pid, record in bridges.items():
+        if not descends_from(pid, main[0], parents):
+            continue
+        started = process_start(pid) if record else None
+        if record is None or started is None:
+            observed = None
+        elif abs(record['startedAt'] / 1000 - started) > 3:
+            continue  # Written by an earlier process that had this PID.
+        elif record.get('stopping') is not False or not -5 <= time.time() - record['updatedAt'] <= RUNTIME_LEASE_SECONDS:
+            observed = None
+        elif since is None or record['startedAt'] / 1000 >= since - 2:
+            return main[0], True
+    return main[0], observed
+
+
+def primary_stopped(state, payload):
+    """Confirm no Bridge from this payload runs, before the payload is replaced.
+
+    Never stops anything. Any live process running this payload's bridge.mjs
+    (primary or separate window), or any live Bridge with a record in this
+    primary state, means it is not stopped; process information that cannot be
+    read means unknown. Both refuse.
+    """
+    program = str(payload / 'bridge.mjs')
+    directory = state / 'primary' / 'runtime'
+    try:
+        table = process_table()
+        if directory.is_symlink():
+            raise OSError('Runtime directory is a symlink')
+        names = os.listdir(directory) if directory.is_dir() else []
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise RuntimeError('Whether a Codex + Claude Bridge is still running could not be checked, so nothing was replaced.') from None
+    running = [pid for pid, (_, command) in table.items() if program in command]
+    for name in names:
+        match = RUNTIME_RECORD.fullmatch(name)
+        pid = int(match[1]) if match else None
+        if pid in table and re.search(r'bridge\.mjs(?:\s|$)', table[pid][1]):
+            running.append(pid)  # A record whose PID is a dead or unrelated process is stale.
+    if running:
+        raise RuntimeError('A Codex + Claude Bridge from this installation is still running. Quit Codex (and the separate test window) yourself once its chats are idle, then run the installer again. Nothing was replaced.')
+    return {'stopped': True, 'state': str(state / 'primary')}
+
+
+def start_primary(state, app):
+    """Open the unchanged primary app once with this Bridge as its app-server.
+
+    Uses the app's normal profile and history: nothing is copied and no Codex
+    configuration is changed. The setting applies to this one launch only.
+    """
+    executable, real = primary_app(app)
+    root = state / 'primary'
+    for path in [state, root, *(root / name for name in ['threads', 'logs', 'runtime'])]:
+        if path.is_symlink():
+            raise RuntimeError('Bridge state directories must not be symlinks.')
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(root, 0o700)
+    lock = (root / 'launcher.lock').open('a')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        raise RuntimeError('Another Codex + Claude launch is in progress.') from None
+    try:
+        table = process_table()
+        earlier = primary_bridges(root, table)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise RuntimeError('Whether Codex is running could not be checked, so it was not opened.') from None
+    if app_processes(executable, table):
+        raise RuntimeError('Codex is already running. Quit it yourself once its chats are idle, then try again. Nothing was changed.')
+    # A Bridge from an earlier primary launch must have exited with its app.
+    if earlier:
+        raise RuntimeError('A Codex + Claude Bridge from an earlier launch is still running. Wait for it to exit, then try again.')
+    claude = claude_path()
+    if not claude:
+        raise RuntimeError('Install the official Claude Code CLI and run claude auth login first.')
+    node = app / 'Contents/Resources/cua_node/bin/node'
+    node = str(node) if node.is_file() else shutil.which('node')
+    if not node:
+        raise RuntimeError('Node.js must already be installed.')
+    wrapper = root / 'codex-bridge'
+    write_private(wrapper, wrapper_script(node, real, root, None, claude, primary=True, isolated=state))
+    # Only this launch receives the setting. Codex, Bridge and Electron settings
+    # of this shell, such as the separate test profile's, are not passed on.
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith(('CODEX_', 'BRIDGE_')) and key != 'ELECTRON_RUN_AS_NODE'}
+    launched = time.time()
+    try:
+        opened = subprocess.run([OPEN, '-a', str(app), '--env', f'CODEX_CLI_PATH={wrapper}'], env=env,
+                                capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        opened = None
+    if not opened or opened.returncode:
+        raise RuntimeError('macOS could not open Codex. Nothing else was changed.')
+    deadline = time.monotonic() + PRIMARY_START_SECONDS
+    pid = None
+    while time.monotonic() < deadline:
+        pid, bridged = primary_bridge(executable, root, since=launched)
+        if bridged:
+            return {'mode': 'primary', 'pid': pid, 'bridge': True, 'state': str(root)}
+        time.sleep(0.5)
+    if pid:
+        raise RuntimeError('Codex opened, but its Claude Bridge was not observed. GPT works as usual; Claude is unavailable in this window. Quit Codex when its chats are idle and try again, or run codex-claude doctor.')
+    raise RuntimeError('Codex did not start. Run codex-claude doctor.')
+
+
+def primary_status(state, app):
+    executable, _ = primary_app(app)
+    pid, bridged = primary_bridge(executable, state / 'primary')
+    return {'mode': 'primary', 'pid': pid, 'running': None if bridged is None and pid is None else bool(pid), 'bridge': bridged,
+            'activeThreads': active_threads(state / 'primary', pid) if pid else []}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--state', type=Path, default=DEFAULT_STATE)
@@ -339,10 +573,22 @@ def main():
     parser.add_argument('--stop', action='store_true')
     parser.add_argument('--status', action='store_true')
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--primary', action='store_true', help='Open the normal Codex app once with the Bridge (no profile copy)')
+    parser.add_argument('--stopped', action='store_true', help='With --primary: confirm no Bridge from --payload runs (for replacement)')
+    parser.add_argument('--payload', type=Path, help='Installed package directory checked by --stopped (default: this one)')
     args = parser.parse_args()
     state = args.state.resolve()
     if args.check:
-        print(json.dumps(preflight(state, args.source.resolve(), args.app.resolve())))
+        print(json.dumps(preflight(state, args.source.resolve(), args.app.resolve(), primary=args.primary)))
+        return
+    if args.primary:
+        if args.stop or args.prepare or args.stdio or args.no_auth_copy:
+            raise RuntimeError('Primary mode only opens Codex or reports status. Quit Codex yourself when its chats are idle.')
+        if args.stopped:
+            print(json.dumps(primary_stopped(state, (args.payload or ROOT).resolve())))
+            return
+        app = args.app.resolve()
+        print(json.dumps(primary_status(state, app) if args.status else start_primary(state, app)))
         return
     if args.status:
         pid = running_pid(state)
