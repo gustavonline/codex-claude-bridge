@@ -273,3 +273,60 @@ test('hostile event values cannot inject an output, quote or command into the se
     assert.equal(existsSync(marker), false, `aggregate ${JSON.stringify(value)}: nothing executed`);
   }
 });
+
+// The check-run name an event gives the aggregate job. An unnamed job reports its
+// ID; a named one, its evaluated name. Only this workflow's conditional form is understood.
+function contextName(github) {
+  const expression = scalar(job('checks'), 'name', 4);
+  if (expression === null) return 'checks';
+  const match = /^\$\{\{ ([\w.]+) == '([^']*)' && '([^']*)' \|\| format\('([^']*)', ([\w.]+)\) \}\}$/.exec(expression);
+  assert.ok(match, `supported name expression: ${expression}`);
+  return resolve(`\${{ ${match[1]} }}`, { github }) === match[2] ? match[3] : match[4].replace('{0}', resolve(`\${{ ${match[5]} }}`, { github }));
+}
+// The protected gate for one head, modelled on PR21's actual readback at 9ec14c1
+// (BEFORE-ACTUAL-GITHUB.json): each event reporting a check run named `checks` is
+// a separate required entry and every entry must pass; within an event the latest
+// run counts. A head with no such entry is unsatisfied (the check is still expected).
+function gate(runs) {
+  const latest = new Map();
+  for (const { github, ...results } of runs) {
+    if (contextName(github).toLowerCase() !== 'checks') continue;
+    latest.set(github.event_name, simulate({ github, ...results }).aggregate.status === 0);
+  }
+  return latest.size > 0 && [...latest.values()].every(Boolean);
+}
+const push = { github: { event_name: 'push' } };
+const opened = { github: labeled(github => { github.event.action = 'opened'; delete github.event.label; }) };
+
+test('only pull-request runs report the required checks name; push and manual runs report a diagnostic name', () => {
+  for (const action of ['opened', 'synchronize', 'reopened', 'labeled']) {
+    assert.equal(contextName(labeled(github => { github.event.action = action; })), 'checks', `pull_request ${action}`);
+  }
+  for (const event of ['push', 'workflow_dispatch', 'pull_request_target', 'schedule', 'workflow_run']) {
+    const name = contextName({ event_name: event });
+    assert.notEqual(name.toLowerCase(), 'checks', event);
+    assert.equal(name, `Diagnostic aggregate, not required (${event})`, event);
+  }
+});
+
+test('a source-only push no longer blocks a qualified pull request, and nothing else qualifies the head', () => {
+  const qualified = { github: labeled() };
+  // The observed collision: a red source-only push and a green owner-labelled pull request on one head.
+  assert.equal(gate([push, qualified]), true, 'the push run does not report the required name');
+  assert.equal(gate([push, opened, qualified]), true, 'the labelled run supersedes the earlier pull-request run');
+  // Refusals.
+  for (const [name, runs] of [
+    ['an ordinary pull request', [push, opened]],
+    ['a push alone (no pull-request check yet)', [push]],
+    ['a successful manual full run', [push, { github: { event_name: 'workflow_dispatch' }, qualification: 'full-artifacts' }]],
+    ['a label from another sender', [push, opened, { github: labeled(github => { github.event.sender = { id: 7002, login: 'synthetic-owner' }; }) }]],
+    ['a fork head', [push, opened, { github: labeled(github => { github.event.pull_request.head.repo.id = 9002; }) }]],
+    ['a new head with the label kept', [push, { github: labeled(github => { github.event.action = 'synchronize'; delete github.event.label; }) }]],
+    ['another label added after qualification', [push, qualified, { github: labeled(github => { github.event.label.name = 'bug'; }) }]],
+    ...['failure', 'cancelled', 'skipped', ''].flatMap(outcome => [
+      [`package job ${JSON.stringify(outcome)}`, [push, opened, { ...qualified, full: outcome }]],
+      [`source job ${JSON.stringify(outcome)}`, [push, opened, { ...qualified, source: outcome }]],
+    ]),
+    ['select failed', [push, opened, { ...qualified, select: 'failure' }]],
+  ]) assert.equal(gate(runs), false, name);
+});

@@ -99,8 +99,11 @@ jobs:
         run: node scripts/check-artifacts.mjs --verify
   # The required aggregate: green only when the full package and final-artifact
   # path ran and passed on every platform. A source-only, skipped, cancelled,
-  # failed or missing result leaves it failing, never skipped.
+  # failed or missing result leaves it failing, never skipped. Only pull-request
+  # runs report the required name `checks`; push and manual runs report a
+  # diagnostic name, so they neither satisfy nor block the pull request's check.
   checks:
+    name: ${{ github.event_name == 'pull_request' && 'checks' || format('Diagnostic aggregate, not required ({0})', github.event_name) }}
     if: always()
     needs: [select, source, test]
     runs-on: ubuntu-latest
