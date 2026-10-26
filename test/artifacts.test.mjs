@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { deflateRawSync, gzipSync } from 'node:zlib';
 
 // Final-artifact check (issue #15) on tiny synthetic archives only, written to a
@@ -393,4 +393,47 @@ test('an entry name in a supported format is refused and redacted in every outpu
     assert.deepEqual(refused(env, 'private-file name').report.findings, [{ artifact: PLUGIN, entry: 'codex-claude/[redacted].env', category: 'environment-file' },
       { artifact: PLUGIN, entry: 'codex-claude/[redacted].env', category: 'github-token' }]);
   } finally { env.close(); }
+});
+
+// The deadline is checked between entries. Here a tightened bound exercises the
+// refusal with real time (the production default is covered by the synthetic-clock
+// test below); environment values can only tighten a bound, shown here against the
+// default entry bound.
+test('a scan past its deadline or entry bound fails, withdraws an earlier pass, and the bounds cannot be loosened', () => {
+  const many = count => Array.from({ length: count }, (_, i) => ({ name: `package/many/${i}.txt`, data: 'a' }));
+  const slow = release({ runtimeExtra: many(1300) });
+  try {
+    assert.equal(slow.run().status, 0, 'clean within the default bounds');
+    assert.ok(existsSync(slow.record()));
+    const result = refused(slow, 'tightened deadline', ['timeout'], { BRIDGE_ARTIFACT_MAX_MILLISECONDS: '1' });
+    assert.deepEqual(result.report.findings.filter(f => f.category === 'timeout').map(f => f.artifact), [RUNTIME, PLUGIN, INSTALLER]);
+  } finally { slow.close(); }
+  // About 5,100 entries across the runtime and its two nested copies exceed the default 5,000.
+  const large = release({ runtimeExtra: many(1700) });
+  try {
+    for (const env of [{}, { BRIDGE_ARTIFACT_MAX_ENTRIES: '100000', BRIDGE_ARTIFACT_MAX_MILLISECONDS: '999999999' }])
+      refused(large, `entry bound with ${JSON.stringify(env)}`, ['archive-bound'], env);
+  } finally { large.close(); }
+});
+
+// A synthetic clock, not real time. A test-only --import preload makes Date.now()
+// report a fixed offset past the scan start when called from the checker's
+// inspect() (where the deadline is compared), and the start everywhere else. The
+// unchanged checker then selects and compares its production default deadline.
+// This does not show that a single long step is interrupted (the deadline is
+// cooperative, checked between entries), nor how a CI step timeout ends a run.
+test('the default deadline is exactly 120 seconds and cannot be raised (synthetic clock)', () => {
+  const r = release();
+  try {
+    const clock = join(r.root, 'synthetic-clock.mjs');
+    writeFileSync(clock, ['const start = 1_800_000_000_000, offset = Number(process.env.BRIDGE_TEST_CLOCK_OFFSET);',
+      'Date.now = () => /\\n\\s+at inspect \\(/.test(new Error().stack) ? start + offset : start;', ''].join('\n'));
+    const at = (offset, env = {}) => ({ NODE_OPTIONS: `--import=${pathToFileURL(clock).href}`, BRIDGE_TEST_CLOCK_OFFSET: String(offset), ...env });
+    const within = r.run([], at(120_000));
+    assert.equal(within.status, 0, `120 000 ms is within the default: ${within.stderr}`);
+    assert.ok(existsSync(r.record()));
+    const past = refused(r, '120 001 ms', ['timeout'], at(120_001));
+    assert.deepEqual(past.report.findings.filter(f => f.category === 'timeout').map(f => f.artifact), [RUNTIME, PLUGIN, INSTALLER]);
+    refused(r, 'a raised deadline setting', ['timeout'], at(120_001, { BRIDGE_ARTIFACT_MAX_MILLISECONDS: '999999999' }));
+  } finally { r.close(); }
 });

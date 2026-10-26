@@ -25,7 +25,7 @@ Download the installer ZIP from [Releases](https://github.com/gustavonline/codex
 
 Alternatively, install the **Model Bridge** plugin ZIP, then ask its `setup` skill to start setup. The plugin has two skills: setup and diagnose. Installing the skills alone does not execute scripts or start a daemon. The current RC10 release installs and opens only the separate test window described below.
 
-The unreleased RC11 source (0.3.0-rc.11) also registers a read-only plugin Home view, a small local MCP server started with Codex's plugin tools. Its installer prepares both launchers and opens neither. Neither is in the RC10 release, and loading or showing Home in Codex has not been tested (see [Support](docs/support.md)).
+The unreleased RC12 source (0.3.0-rc.12) also registers a read-only plugin Home view, a small local MCP server started with Codex's plugin tools. Its installer prepares both launchers and opens neither. Neither is in the RC10 release, and loading or showing Home in Codex has not been tested (see [Support](docs/support.md)).
 
 The existing launcher is `~/Applications/Codex + Claude.command`; the stable CLI name is `codex-claude`:
 
