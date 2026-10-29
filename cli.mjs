@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { diagnose, readLogs, saveReport, threadId } from './diagnose.mjs';
-import { compatibilityCheck } from './smoke.mjs';
+import { compatibilityCheck, compatibilityScope } from './smoke.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
@@ -15,7 +15,7 @@ const help = `Codex + Claude ${version}
 codex-claude                         Start (or reuse) the isolated Codex app
 codex-claude setup                   Check setup and create a double-click launcher
 codex-claude status                  Show whether this isolated app is running
-codex-claude check                   Verify installed runtime/protocol compatibility
+codex-claude check                   Verify protocol compatibility with a synthetic profile
 codex-claude stop | restart          Stop/restart only when its chats are idle
 codex-claude primary [status]        Open your normal Codex app once with Claude (opt-in;
                                      refuses while Codex runs; quit Codex yourself when idle)
@@ -85,16 +85,19 @@ export function shortcut(config, home = homedir(), { name = 'Codex + Claude', co
 }
 export const primaryShortcut = { name: 'Codex + Claude (main app)', command: ['primary'] };
 
-// Runs the protocol compatibility check (temporary isolated profile, no model
-// prompts) when versions changed since the last passing check, or when forced.
+// Runs the protocol compatibility check (fresh synthetic profile, nothing copied
+// from the owner's Codex profile, no model prompts) unless the last report passed
+// for the same versions and the same check scope, or when forced. A report from
+// an earlier check scope, or an unreadable one, is never reused.
 async function compatible(config, preflight, values, force = false) {
   const versions = { bridgeVersion: version, app: preflight.appVersion, codex: preflight.codexVersion, claude: preflight.claudeVersion,
     node: preflight.nodeVersion, sdk: JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).dependencies['@anthropic-ai/claude-agent-sdk'] };
   const path = join(config.state, 'diagnostics/compatibility.json');
   let last;
   try { last = JSON.parse(readFileSync(path, 'utf8')); } catch {}
-  if (!force && last?.passed && JSON.stringify(last.versions) === JSON.stringify(versions)) return { ...last, path };
-  if (!values.json) console.log('Checking Codex and Claude compatibility (no model prompts)…');
+  if (!force && last?.passed === true && last.scope === compatibilityScope && JSON.stringify(last.versions) === JSON.stringify(versions))
+    return { ...last, path };
+  if (!values.json) console.log('Checking Codex and Claude compatibility with a synthetic profile (no model prompts)…');
   const report = await compatibilityCheck(config, findPython(), versions);
   saveReport(path, report);
   if (!report.passed) throw new Error(`Compatibility check failed after ${report.checks.length} checks. Diagnosis: ${path}`);
@@ -166,7 +169,10 @@ export async function main(args = process.argv.slice(2)) {
   if (['start', 'restart', 'check'].includes(command)) {
     const preflight = launch(config, ['--check']);
     const report = await compatible(config, preflight, values, command === 'check');
-    if (command === 'check') { console.log(values.json ? JSON.stringify(report) : `Compatibility checks passed. Report: ${report.path}`); return; }
+    if (command === 'check') {
+      console.log(values.json ? JSON.stringify(report) : `Protocol compatibility passed with a synthetic profile; your Codex configuration, plugins and desktop window were not checked. Report: ${report.path}`);
+      return;
+    }
     if (command === 'restart') launch(config, ['--stop']);
     const result = launch(config);
     if (!existsSync(settingsPath())) remember(config);

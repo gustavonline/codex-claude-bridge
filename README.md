@@ -25,7 +25,7 @@ Download the installer ZIP from [Releases](https://github.com/gustavonline/codex
 
 Alternatively, install the **Model Bridge** plugin ZIP, then ask its `setup` skill to start setup. The plugin has two skills: setup and diagnose. Installing the skills alone does not execute scripts or start a daemon. The current RC10 release installs and opens only the separate test window described below.
 
-The unreleased RC12 source (0.3.0-rc.12) also registers a read-only plugin Home view, a small local MCP server started with Codex's plugin tools. Its installer prepares both launchers and opens neither. Neither is in the RC10 release, and loading or showing Home in Codex has not been tested (see [Support](docs/support.md)).
+The unreleased RC13 source (0.3.0-rc.13) also registers a read-only plugin Home view, a small local MCP server started with Codex's plugin tools. Its installer prepares both launchers and opens neither. Neither is in the RC10 release, and loading or showing Home in Codex has not been tested (see [Support](docs/support.md)).
 
 The existing launcher is `~/Applications/Codex + Claude.command`; the stable CLI name is `codex-claude`:
 
@@ -84,7 +84,7 @@ Read [architecture](docs/architecture.md), [support and acceptance](docs/support
 
 ## Authentication and ownership
 
-The first desktop launch copies an existing Codex/OpenAI `auth.json` into the isolated profile (file mode 0600, profile mode 0700), so GPT can use the existing login. This is a separate credential snapshot: it is not continuously mirrored, and later login changes are not written back to normal Codex. Token-refresh interaction between separate snapshots is unqualified; a separate sign-in may be needed if one becomes stale. `codex-claude check` never copies this file or sends model prompts.
+The first desktop launch copies an existing Codex/OpenAI `auth.json` into the isolated profile (file mode 0600, profile mode 0700), so GPT can use the existing login. This is a separate credential snapshot: it is not continuously mirrored, and later login changes are not written back to normal Codex. Token-refresh interaction between separate snapshots is unqualified; a separate sign-in may be needed if one becomes stale. `codex-claude check` sends no model prompts and copies nothing from your Codex profile, including this file: from RC13 it checks protocol compatibility with a fresh synthetic profile, so it does not check your own configuration, model catalog, permissions or plugins.
 
 The bridge runs the unchanged Claude Code binary through the SDK. It does not read Claude credentials, imitate its HTTP client, distribute shared accounts or proxy usage. This preview selects the existing subscription login and filters inherited API/provider overrides to avoid accidentally switching billing. It does not implement an API-key product mode.
 

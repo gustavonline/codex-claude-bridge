@@ -9,11 +9,13 @@ the user's existing Codex and Claude Code permissions. A separate profile is not
 an OS sandbox. See [architecture](docs/architecture.md) for actual boundaries
 and [operations](docs/operations.md) for diagnosis and recovery.
 
-Initial desktop preparation copies Codex/OpenAI `auth.json`, when present, into
-the isolated profile with mode 0600 beneath a mode-0700 directory. It is a
-one-time credential snapshot, not ongoing auth synchronization. Login/refresh
+Initial desktop preparation of the separate window copies Codex/OpenAI `auth.json`,
+when present, into the isolated profile with mode 0600 beneath a mode-0700 directory.
+It is a one-time credential snapshot, not ongoing auth synchronization. Login/refresh
 interaction between separate snapshots is unqualified; do not infer token
-independence. Compatibility probes skip this copy. Live model tests require
+independence. From RC13, compatibility checks (`codex-claude check`, the installer
+check and the first main-app start) copy nothing from the Codex profile: they use
+a fresh synthetic profile in their own temporary directory. Live model tests require
 the separate `--copy-codex-auth` opt-in and remove their private temporary copies.
 The bridge never reads or copies Claude credentials.
 
