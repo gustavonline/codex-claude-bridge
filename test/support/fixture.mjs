@@ -7,14 +7,16 @@ import { Bridge } from '../../bridge.mjs';
 
 const text = value => [{ type: 'text', text: value }];
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
-export function fixture(configuredProvider = 'openai') {
+export function fixture(configuredProvider = 'openai', bridgeOptions = {}) {
   const statePath = mkdtempSync(join(tmpdir(), 'bridge-expanded-'));
   const hosts = new Map(), calls = [], events = [], queries = [], checkpoints = [], controls = {};
   let bridge;
   const nativeModel = model => ({ id: model, model, defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] });
   const response = host => ({ thread: structuredClone(host.thread), model: host.settings.model, modelProvider: host.provider,
     sandbox: host.settings.sandboxPolicy, approvalPolicy: 'never', instructionSources: [], disabledPluginIds: [] });
-  const native = { request: async (method, p) => {
+  // One fake native host shared by every Bridge instance (as instances share a
+  // profile), with notifications sent to the instance that made the request.
+  const nativeRequest = async (method, p, bridge) => {
     calls.push({ method, params: structuredClone(p) });
     if (controls.native) await controls.native(method, p);
     let host = hosts.get(p.threadId);
@@ -71,8 +73,8 @@ export function fixture(configuredProvider = 'openai') {
       return { turnId: turn.id };
     }
     return {};
-  } };
-  const build = () => new Bridge({ native, statePath, desktop: { notify: (method, params) => events.push({ method, params: structuredClone(params) }) },
+  };
+  const build = () => { const instance = new Bridge({ ...bridgeOptions, native: { request: (method, p) => nativeRequest(method, p, instance) }, statePath, desktop: { notify: (method, params) => events.push({ method, params: structuredClone(params) }) },
     getModels: async () => [{ value: 'haiku' }, { value: 'sonnet', supportsEffort: true, supportedEffortLevels: ['low', 'high'] }],
     history: { checkpoint: async record => ({ sessionId: record.claudeSessionId, messageId: record.turns.at(-1).id }),
       before: async (record, count) => { checkpoints.push({ id: record.thread.id, count }); return count ? randomUUID() : undefined; } },
@@ -85,7 +87,7 @@ export function fixture(configuredProvider = 'openai') {
         yield { type: 'assistant', message: { id: randomUUID(), content: [{ type: 'text', text: 'CLAUDE RESULT' }] } };
         yield { type: 'result', subtype: 'success' };
       })(); stream.close = () => {}; return stream;
-    } });
+    } }); return instance; };
   bridge = build();
   const f = { get bridge() { return bridge; }, statePath, hosts, calls, events, queries, checkpoints, controls,
     start: async (model = 'haiku', options = {}) => (await bridge.request('thread/start', { model, cwd: statePath, ...options })).thread.id,

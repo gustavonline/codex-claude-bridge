@@ -59,7 +59,6 @@ fi
 bridge_command="$bridge_install_dir/node_modules/.bin/codex-claude"
 if [ -x "$bridge_command" ] && [ "$("$bridge_command" --version)" = "$bridge_version" ]; then
   "$bridge_command" setup "$@"
-  "$bridge_command"
   bridge_success=1
   exit 0
 fi
@@ -68,6 +67,12 @@ bridge_new="$bridge_stage/package/node_modules/.bin/codex-claude"
 [ "$("$bridge_new" --version)" = "$bridge_version" ] || { echo 'Unexpected staged package version.' >&2; exit 1; }
 # The public compatibility check uses a disposable profile and no model prompt.
 "$bridge_new" check "$@" --state "$bridge_stage/check" --json >/dev/null
+# Codex opened with the main-app launcher runs a Bridge from the installed
+# package. It is never quit here: replacement requires that no Bridge from that
+# package runs, and an unknown state refuses too (checked by the staged CLI).
+if [ -e "$bridge_install_dir" ]; then
+  "$bridge_new" primary stopped "$@" --payload "$bridge_install_dir/node_modules/codex-claude-bridge-local" >/dev/null
+fi
 if [ -x "$bridge_command" ]; then "$bridge_command" stop; fi
 if [ -e "$bridge_install_dir" ]; then
   [ ! -L "$bridge_install_dir" ] || { echo 'Installation directory is a symlink; left unchanged.' >&2; exit 1; }
@@ -85,5 +90,5 @@ mkdir -p "$HOME/.local/bin"
 if [ ! -e "$HOME/.local/bin/codex-claude" ] && [ ! -L "$HOME/.local/bin/codex-claude" ]; then
   ln -s "$bridge_command" "$HOME/.local/bin/codex-claude"
 fi
-"$bridge_command"
+# Setup prepared both launchers; no window is opened here.
 bridge_success=1
