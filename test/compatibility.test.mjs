@@ -327,8 +327,20 @@ case "$1" in
   *) echo "$1" >> "$BRIDGE_TEST_EVENTS";;
 esac
 `, 0o755);
-    put(join(w.bin, 'uname'), '#!/bin/sh\necho Darwin\n', 0o755);
-    put(join(w.bin, 'npm'), '#!/bin/sh\n[ "$1" = ci ]\n', 0o755);
+    // The unchanged installer runs with PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+    // (install.command), so a tool placed in this world's own bin directory would come
+    // after those and a runner's real npm could win (hosted run 40963174900: `npm ci`
+    // EUSAGE on the synthetic runtime before any compatibility check). Every tool the
+    // installer's real PATH could shadow is therefore bound under the synthetic HOME's
+    // .local/bin, which that PATH puts first.
+    const tools = join(w.home, '.local/bin'), npmCalls = join(w.root, 'npm-calls');
+    put(join(tools, 'uname'), '#!/bin/sh\necho Darwin\n', 0o755);
+    // Records how it was reached ($0 is the path the installer's PATH resolved) and what it
+    // was asked, then accepts only `npm ci`, like the real command it stands in for.
+    put(join(tools, 'npm'), '#!/bin/sh\necho "$0 $*" >> "$BRIDGE_TEST_NPM_CALLS"\n[ "$1" = ci ]\n', 0o755);
+    put(join(tools, 'claude'), fakeClaude, 0o755);
+    put(join(tools, 'shasum'), shasum, 0o755);
+    symlinkSync(process.execPath, join(tools, 'node'));
     const tgz = join(bundle, 'codex-claude-bridge-local-0.0.0-synthetic.tgz');
     const packed = spawnSync('tar', ['-czf', tgz, '-C', archive, 'package']);
     assert.equal(packed.status, 0, packed.stderr?.toString());
@@ -336,7 +348,16 @@ esac
     // The synthetic Claude catalog is empty, so this check fails at the catalog.
     const result = spawnSync('sh', [join(bundle, 'install.command'), '--app', w.app], { encoding: 'utf8', timeout: 180000,
       env: w.env({ FAKE_CLAUDE_MODE: 'no-models', BRIDGE_TEST_NODE: process.execPath, BRIDGE_TEST_PRELOAD: pathToFileURL(w.preload).href,
-        BRIDGE_TEST_CLI: cli, BRIDGE_TEST_EVENTS: events }) });
+        BRIDGE_TEST_CLI: cli, BRIDGE_TEST_EVENTS: events, BRIDGE_TEST_NPM_CALLS: npmCalls }) });
+    // Fixture precondition (equipment, not copy evidence): the installer's real PATH reached
+    // this world's npm, once, from the synthetic HOME's tool directory and for the staging
+    // directory. If this fails, a real npm or another tool was used instead of the fixture's.
+    const calls = existsSync(npmCalls) ? readFileSync(npmCalls, 'utf8').split('\n').filter(Boolean) : [];
+    assert.equal(calls.length, 1, `the installer reached the synthetic npm once: ${JSON.stringify(calls)} ${result.stderr}`);
+    const staged = /^(.+)\/npm ci --prefix (.+)\/package\/node_modules\/codex-claude-bridge-local --ignore-scripts --omit=optional --no-audit --no-fund$/.exec(calls[0]);
+    assert.ok(staged, `the staging command reached the synthetic npm: ${calls[0]}`);
+    assert.equal(staged[1], tools, 'npm was resolved from the synthetic HOME tool directory');
+    assert.ok(staged[2].startsWith(join(w.home, '.local/share/.codex-claude-stage.')), `npm ran in the installer's own staging directory: ${staged[2]}`);
     launcherNeverUsedOwner(w, result.stderr);
     onlyPreflightReads(w, 1);
     const runs = w.runs();
