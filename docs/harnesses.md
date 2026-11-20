@@ -7,7 +7,7 @@ Model Bridge sits beneath the unmodified Codex desktop. A **harness** is the run
 | Codex | Codex app-server (native) | Yes | Native; Bridge does not change it. |
 | Claude Code | `@anthropic-ai/claude-agent-sdk` 0.3.325 | Yes | No native tools: every action goes through the Codex MCP tools, so Codex's sandbox and approvals apply. |
 | Custom Responses endpoints | Codex app-server with a Bridge provider | Yes, in the isolated preview | Native Codex execution against the saved endpoint; see the README for the preview's limits. |
-| Gemini (Antigravity) | ACP, `agy acp` (1.5.0 or newer) | No | A workspace's own Antigravity hooks run commands outside the Codex sandbox, without asking, at every session start and model call. See [the qualification](antigravity-qualification.md). |
+| Gemini (Antigravity) | ACP, `agy acp` (1.5.0 or newer) | Linux: yes, once turned on in Home. macOS: not yet | It runs inside Model Bridge's process boundary with only the Codex tools Bridge supplies, because a workspace's own Antigravity hooks would otherwise run commands outside the Codex sandbox. macOS needs its own boundary, which is not qualified yet. See [the qualification](antigravity-qualification.md). |
 | Cursor | `@cursor/sdk` | No | The SDK reports no command or file approval support. |
 | Muse Code | `@muse-code/sdk` | No | Not qualified. |
 | Grok, fx, Kiro | ACP | No | ACP agents with their own tools; not qualified. |
@@ -29,7 +29,30 @@ A route is *(harness, connection, model)*. A model of a non-native harness is al
 
 `thread/start`, `thread/resume`, `thread/fork`, `thread/settings/update` and `turn/start` refuse a `bridge-harness/…` model before any host or SDK sees it. The check covers both `model` and the collaboration mode's model, and the prefix in any letter case.
 
-Today this is a reserved namespace plus that refusal. Execution still chooses Codex or Claude Code by model family, and bare Claude names (`opus`, `sonnet`, `haiku`, `claude-*`) keep resolving to Claude Code. `routeOf()` is the resolver the first executing third harness has to route through. That still needs the adapter refactor the architecture reviews asked for.
+An Antigravity route executes only where Antigravity is qualified and turned on: a new chat on one of its models, or a request on that chat that names its own model. Every other harness route is refused. An Antigravity chat refuses any other model on every model-carrying request, so a router never reads it as a switch. Claude Code and Codex are still chosen by model family, and bare Claude names (`opus`, `sonnet`, `haiku`, `claude-*`) keep resolving to Claude Code. A further harness still needs the adapter refactor the architecture reviews asked for.
+
+## Turning a harness on
+
+In the connection-manager Home, the Gemini (Antigravity) row offers **Turn on** where its boundary is supported (Linux) and `agy` is found. The choice and the resolved runtime path are stored in Bridge's own connection store (`harnesses.json`). Bridge then offers the account's models in the model list for new chats and runs them. **Turn off** stops new chats; existing chats keep their history.
+
+Sign-in is agy's own flow: run `agy` once and sign in with Google. Bridge never sees the password and never copies a profile. `BRIDGE_AGY` exists for development only.
+
+## Child chats and the mailbox
+
+A Codex chat that has Bridge's `codex_bridge_sessions` tools can create a chat on another runtime with `manage create`. That works from a GPT-first chat, and `read models` lists what is available.
+- **Same boundaries:** the child gets the caller's workspace and permissions, and exactly the caller's desktop tools as the desktop gave them. If Bridge did not see them, it says so.
+- **Child to parent:** the child answers with `mailbox report`, sending a question, progress or a result. Messages are deduplicated by requestId, bounded and untrusted.
+- **Parent to child:** the parent's `read wait` returns as soon as the child reports or finishes. Its next turn carries an untrusted pointer to unread messages. Nothing starts, steers or wakes a turn by itself, and creation is capped at two levels.
+- **Shared core:** Claude Code and Antigravity children use the same tools, mailbox and permission checks.
+
+Evidence (Linux, `scripts/live-orchestration.mjs`, the real Codex app-server on this machine's own login):
+- A `gpt-6-luna` chat at low effort created a Gemini 3.8 Flash child, waited, read its mailbox question, replied, and read the answer.
+- That run used 2 GPT turns and 2 Gemini turns.
+
+Not yet observed on a Mac:
+- whether the desktop renders the created chat;
+- whether its desktop tools work for a thread the desktop did not start;
+- whether a browser page then opens visibly.
 
 ## Claude Code lifecycle
 

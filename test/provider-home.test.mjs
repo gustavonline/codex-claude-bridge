@@ -118,7 +118,7 @@ test('shipped Home public MCP lifecycle connects/discovers/selects/enables real 
   const registry = new ProviderRegistry(prepared.state); assert.equal(registry.all()[0].selected, provider.selected);
   const reopened = ready(providerControls(prepared.bindingPath, { request: net.request })); assert.equal(home(reopened).controls.providers.at(-1).selected, provider.selected);
   const list = server({ jsonrpc: '2.0', id: 3, method: 'tools/list' }).result.tools;
-  assert.deepEqual(list.map(t => t.name), ['bridge_home', ...['status', 'auth_begin', 'auth_cancel', 'connect', 'refresh', 'select', 'enabled', 'slots'].map(a => 'bridge_provider_' + a)]); assert.ok(list.slice(1).every(t => t._meta.ui.visibility[0] === 'app'));
+  assert.deepEqual(list.map(t => t.name), ['bridge_home', ...['status', 'auth_begin', 'auth_cancel', 'connect', 'refresh', 'select', 'enabled', 'harness', 'slots'].map(a => 'bridge_provider_' + a)]); assert.ok(list.slice(1).every(t => t._meta.ui.visibility[0] === 'app'));
   assert.equal(list.find(t => t.name === 'bridge_provider_refresh').annotations.openWorldHint, true);
   assert.match(homeHtml(), /A discovered catalog does not prove authentication, tool support, inference compatibility or native picker refresh/);
   input(h, 'Name', 'Retained draft'); const retainedConnect = buttons(h).find(b => b.textContent === 'Connect');
@@ -187,7 +187,7 @@ test('copied plugin serves the actual provider entrypoint and current Home HTML 
   try {
     await closed; assert.deepEqual(result, { code: 0, signal: null }); assert.equal(readFileSync(error, 'utf8'), '');
     const rows = readFileSync(output, 'utf8').trim().split('\n').map(JSON.parse);
-    assert.equal(rows.length, 4); assert.equal(rows.find(r => r.id === 2).result.tools.length, 9);
+    assert.equal(rows.length, 4); assert.equal(rows.find(r => r.id === 2).result.tools.length, 10);
     assert.equal(rows.find(r => r.id === 3).result.structuredContent.controls.kind, 'responses-trial');
     assert.equal(rows.find(r => r.id === 4).result.contents[0].text, homeHtml());
     assert.equal(homeResource, 'ui://codex-claude/home-v11.html'); assert.doesNotMatch(JSON.stringify(rows), new RegExp(parent));

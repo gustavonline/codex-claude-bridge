@@ -25,7 +25,7 @@ import { mailPointer, sessionCall, sessionNamespace, withSessionTools } from './
 import { messageStream, submission, steerTurn, steeringResult, settleSteering } from './steering.mjs';
 import { claudeDecision, claudeDenial, mergeClaudeModels, normalizeModels, recordCatalog, recordOffered, storedModels } from './connections.mjs';
 import { ResponsesRouter } from './plugins/codex-claude/home/providers.mjs';
-import { findExecutable, harnessModelId, harnessRefusal, isHarnessModel, parseHarnessModelId } from './plugins/codex-claude/home/harnesses.mjs';
+import { findExecutable, harnessModelId, harnessRefusal, isHarnessModel, parseHarnessModelId, readHarnessSettings } from './plugins/codex-claude/home/harnesses.mjs';
 import { agentDefinition, open as openAntigravity } from './antigravity.mjs';
 import { sandboxAvailable } from './harness-sandbox.mjs';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -1818,10 +1818,11 @@ export class Bridge {
   // ---- Antigravity chats (antigravity.mjs inside harness-sandbox.mjs; Linux only) ------------------------------------------------------------
   // The same Bridge core as a Claude chat (native host thread, history, queue, session tools, mailbox, permissions); only the runtime differs.
   // Qualified only where the whole-process boundary works, agy is found and its signed-in catalog loads; the catalog is the account's own.
-  // Antigravity runs only when explicitly enabled: BRIDGE_AGY names its runtime (Home's connection list shows a runtime it merely found).
+    // Antigravity runs only when enabled: Home's persisted choice in the connection store (the resolved runtime path), or BRIDGE_AGY for development.
   antigravityRuntime() {
-    const named = process.env.BRIDGE_AGY;
-    return named && findExecutable(named) ? { executable: findExecutable(named), home: process.env.HOME } : null;
+    const chosen = process.env.BRIDGE_AGY ?? (this.connectionRoot ? readHarnessSettings(this.connectionRoot).antigravity : null)?.executable;
+    const enabled = process.env.BRIDGE_AGY ? true : this.connectionRoot && readHarnessSettings(this.connectionRoot).antigravity?.enabled === true;
+    return enabled && chosen && findExecutable(chosen) ? { executable: findExecutable(chosen), home: process.env.HOME } : null;
   }
   antigravityAgent(home) {
     // The MCP-only main agent, under a per-install name so no workspace can shadow it, in agy's own config (never a workspace).

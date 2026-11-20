@@ -186,7 +186,7 @@ function parseProviders(value) {
   // Other harnesses are status facts only (never a model, never an action): bounded strings and closed state values.
   if (value.harnesses !== undefined && (!Array.isArray(value.harnesses) || value.harnesses.length > 16 || value.harnesses.some(function (h) {
     return !isObject(h) || !/^[a-z][a-z0-9-]{1,31}$/.test(h.id) || typeof h.label !== 'string' || h.label.length > 60 || typeof h.reason !== 'string' || h.reason.length > 300
-      || ['found', 'not_found', 'not_applicable'].indexOf(h.runtime) < 0 || h.execution !== 'not_qualified' || h.signIn !== 'unknown' || h.catalog !== 'unknown' || !(h.minimumVersion === undefined || /^[0-9]{1,4}([.][0-9]{1,4}){0,3}$/.test(h.minimumVersion)) || !(h.executable === undefined || /^[A-Za-z0-9_.-]{1,40}$/.test(h.executable));
+      || ['found', 'not_found', 'not_applicable'].indexOf(h.runtime) < 0 || ['not_qualified', 'qualified_here'].indexOf(h.execution) < 0 || (h.execution === 'qualified_here' && (h.id !== 'antigravity' || typeof h.enabled !== 'boolean' || typeof h.canEnable !== 'boolean')) || h.signIn !== 'unknown' || h.catalog !== 'unknown' || !(h.minimumVersion === undefined || /^[0-9]{1,4}([.][0-9]{1,4}){0,3}$/.test(h.minimumVersion)) || !(h.executable === undefined || /^[A-Za-z0-9_.-]{1,40}$/.test(h.executable));
   }))) return null;
   if (value.slots.scope !== undefined && (['all', 'custom'].indexOf(value.slots.scope) < 0 || !Number.isSafeInteger(value.slots.catalogRevision) || value.slots.catalogRevision < 0)) return null;
   if (value.auth !== undefined && (!isObject(value.auth) || ['idle', 'starting', 'waiting', 'exchanging', 'complete', 'failed', 'expired', 'cancelled'].indexOf(value.auth.phase) < 0 || typeof value.auth.storageAvailable !== 'boolean' || !(value.auth.authorizationUrl === null || validAuthUrl(value.auth.authorizationUrl)))) return null;
@@ -222,7 +222,7 @@ function openAuth(url) {
 function readableError(code) {
   var providerErrors = { endpoint_invalid: 'Use an HTTPS endpoint, or a loopback HTTP endpoint with an explicit port.', provider_invalid: 'Enter a connection name and a valid endpoint.', provider_exists: 'This connection is already saved. Select it in settings.', credential_endpoint_mismatch: 'Choose an authentication reference for this exact endpoint.', secret_storage_unavailable: 'Secret storage is unavailable. Check the startup helper.', catalog_failed: 'The catalog request failed. Check the endpoint, then refresh.', free_model_required: 'Choose a catalog-advertised free model.', auth_expired: 'Sign-in expired. Try again.', auth_cancelled: 'Sign-in cancelled.' };
   if (providerErrors[code]) return providerErrors[code];
-  return ({ catalog_auth_required: 'The provider refused catalog access. Check its saved sign-in.', catalog_rate_limited: 'The provider rate-limited this catalog request.', catalog_unreachable: 'The endpoint could not be reached.', catalog_protocol_unsupported: 'The endpoint did not return a supported model catalog.', auth_denied: 'Browser authorization was refused.', auth_rate_limited: 'Authorization was rate-limited.', auth_unreachable: 'The authorization service could not be reached.', auth_timeout: 'Authorization timed out.', stale_revision: 'Connection state changed; read current state before trying again.' })[code] || 'The action could not be completed. Read current state before trying again.';
+  return ({ catalog_auth_required: 'The provider refused catalog access. Check its saved sign-in.', catalog_rate_limited: 'The provider rate-limited this catalog request.', catalog_unreachable: 'The endpoint could not be reached.', catalog_protocol_unsupported: 'The endpoint did not return a supported model catalog.', auth_denied: 'Browser authorization was refused.', auth_rate_limited: 'Authorization was rate-limited.', auth_unreachable: 'The authorization service could not be reached.', auth_timeout: 'Authorization timed out.', stale_revision: 'Connection state changed; read current state before trying again.', harness_not_qualified: 'This runtime cannot run on this system yet.', harness_runtime_not_found: 'This runtime is not installed. Install it, then try again.' })[code] || 'The action could not be completed. Read current state before trying again.';
 }
 function sameScope(a, b) { return a && b && a.bindingId === b.bindingId && a.profileId === b.profileId && a.bridgeId === b.bridgeId; }
 function scopeOf(c) { return c ? { kind: c.kind, bindingId: c.bindingId, profileId: c.profileId, bridgeId: c.bridgeId, revision: c.revision } : null; }
@@ -414,9 +414,14 @@ function renderProviders(target, c, blocked) {
   if (!providerDraft.detail && !providerDraft.open) (c.harnesses || []).forEach(function (h) {
     var row = node('article', undefined, 'provider-card harness-row'), info = node('div');
     var needs = h.minimumVersion ? ' ' + h.minimumVersion + ' or newer' : '';
-    var line = (h.runtime === 'found' ? h.executable + ' found, version not checked (needs' + (needs || ' a supported version') + ')' : h.runtime === 'not_found' ? 'Needs ' + h.executable + needs : 'Separate runtime') + ' · Sign-in and models not checked · Not available in Bridge yet';
+    var found = (h.runtime === 'found' ? h.executable + ' found, version not checked (needs' + (needs || ' a supported version') + ')' : h.runtime === 'not_found' ? 'Needs ' + h.executable + needs : 'Separate runtime');
+    var line = found + ' · ' + (h.execution !== 'qualified_here' ? 'Sign-in and models not checked · Not available in Bridge yet'
+      : h.enabled ? 'Enabled for new chats · uses its own sign-in' : 'Available on this system · Off');
     var why = node('details'); why.append(node('summary', 'Why'), node('p', h.reason, 'muted'));
-    info.append(node('h3', h.label), node('small', line, 'muted'), why); row.append(info); more.append(row);
+    info.append(node('h3', h.label), node('small', line, 'muted'), why); row.append(info);
+    // The one action where its boundary is supported and its runtime is found: on or off for new chats. Sign-in stays the runtime's own.
+    if (h.execution === 'qualified_here' && h.canEnable) button(row, h.enabled ? 'Turn off' : 'Turn on', function () { controlCall('harness', { harness: h.id, enabled: !h.enabled }); }, 'harness-' + h.id, false, false, (h.enabled ? 'Turn off ' : 'Turn on ') + h.label);
+    more.append(row);
   });
   if (providerDraft.open) {
     var form = node('section', undefined, 'connection-form'); form.setAttribute('aria-label', 'New connection'); form.append(node('h3', 'Add a provider'));
@@ -1005,7 +1010,7 @@ export function session(observe = observeHome, controls = null) {
           const value = home(controlState);
           return reply({ content: [{ type: 'text', text: controls.message ?? 'Synthetic test connection updated/read. Native profile, authentication and inference remain unverified.' }], structuredContent: value });
         }).catch(error => {
-          const code = ['invalid_request', 'wrong_scope', 'binding_invalid', 'store_unavailable', 'stale_revision', 'invalid', 'no_catalog', 'locked', 'generation_exhausted', 'catalog_invalid', 'catalog_timeout', 'catalog_failed', 'catalog_auth_required', 'catalog_rate_limited', 'catalog_unreachable', 'catalog_protocol_unsupported', 'endpoint_invalid', 'provider_invalid', 'provider_exists', 'credential_endpoint_mismatch', 'secret_storage_unavailable', 'free_model_required', 'auth_expired', 'auth_cancelled', 'auth_denied', 'auth_rate_limited', 'auth_unreachable', 'auth_timeout'].includes(error.code) ? error.code : 'action_failed';
+          const code = ['invalid_request', 'wrong_scope', 'binding_invalid', 'store_unavailable', 'stale_revision', 'invalid', 'no_catalog', 'locked', 'generation_exhausted', 'catalog_invalid', 'catalog_timeout', 'catalog_failed', 'catalog_auth_required', 'catalog_rate_limited', 'catalog_unreachable', 'catalog_protocol_unsupported', 'endpoint_invalid', 'provider_invalid', 'provider_exists', 'credential_endpoint_mismatch', 'secret_storage_unavailable', 'free_model_required', 'auth_expired', 'auth_cancelled', 'auth_denied', 'auth_rate_limited', 'auth_unreachable', 'auth_timeout', 'harness_not_qualified', 'harness_runtime_not_found'].includes(error.code) ? error.code : 'action_failed';
           return reply({ isError: true, content: [{ type: 'text', text: `Action not confirmed (${code}). Read the current test state before trying again.` }], structuredContent: { error: code } });
         });
       }
