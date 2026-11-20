@@ -1791,7 +1791,9 @@ export class ResponsesRouter {
       // An explicit provider is only ever the one the target itself is (what Bridge shows for a Claude chat, the configured one for GPT): anything else is a foreign override, refused before anything is created.
       if ((stranded || wrongOwner) && params.modelProvider != null && params.modelProvider !== (stranded ? 'claude_code' : await configured())) fail('provider_override_refused');
     }
-    if (['thread/settings/update', 'turn/start'].includes(method) || stranded || wrongOwner) {
+    // An open that names a model of another runtime is a switch like any other: it takes the same guarded hand-off (or its refusal), never Bridge's in-place flip.
+    const resumeAsks = method === 'thread/resume' && typeof (params.collaborationMode?.settings?.model ?? params.model) === 'string';
+    if (['thread/settings/update', 'turn/start'].includes(method) || resumeAsks || stranded || wrongOwner) {
       const requested = params.collaborationMode?.settings?.model ?? params.model ?? (stranded ? legacy.snapshot.model : undefined), source = link?.physicalId ?? logical;
       const route = this.readRoute(source), managed = this.managed(source);
       const owned = typeof requested === 'string' && requested.startsWith(localPrefix) && !route ? await this.nativeOwns(requested) : false;

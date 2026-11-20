@@ -434,3 +434,20 @@ test('F10 on the Bridge: a transient partial catalog does not erase the saved vi
   } finally { clean(root, f); }
 });
 
+// ---- An open (thread/resume) that names another runtime's model takes the guarded hand-off, never the in-place flip
+test('R-RESUME a resume naming GPT on a queued Claude chat is refused intact, and a resume naming Claude on a GPT child is a new Claude child', async () => {
+  const { root, f } = setup(); try {
+    const id = await f.start('haiku'), a = (await f.send(id, 'x')).turn; await f.done(a.id);
+    const sub = (await q(f, id, 'add', { clientUserMessageId: 'Q', input: text('CLAUDE_INTENDED') })).queuedSubmission, saved = JSON.stringify(f.bridge.records.get(id)), n = f.queries.length;
+    await assert.rejects(f.bridge.request('thread/resume', { threadId: id, model: 'gpt-test' }), { code: 'handoff_queue_pending' });
+    assert.equal(JSON.stringify(f.bridge.records.get(id)), saved, 'the Claude chat is unchanged'); assert.equal(f.bridge.localResponses.readLink(id), null);
+    const g = await f.send(id, 'ordinary'); await f.done(g.turn.id); await ticks(150);
+    assert.equal(f.calls.filter(c => c.method === 'turn/start').length, 0, 'nothing ran on GPT'); assert.deepEqual((await q(f, id, 'list')).data, [], 'the queue continued on Claude, its own runtime');
+    assert.equal(f.queries.length, n + 2); assert.equal(f.queries.filter(x => JSON.stringify(x.input ?? x.prompt ?? '').includes('CLAUDE_INTENDED')).length, 1, 'once'); void sub;
+    const other = await f.start('haiku'), b = (await f.send(other, 'y')).turn; await f.done(b.id);
+    await f.bridge.request('thread/settings/update', { threadId: other, model: 'gpt-test', effort: 'low' }); const gpt = f.bridge.localResponses.readLink(other).physicalId;
+    const opened = await f.bridge.request('thread/resume', { threadId: other, model: 'sonnet' }), link = f.bridge.localResponses.readLink(other);
+    assert.deepEqual([opened.thread.id, opened.modelProvider, link.kind], [other, 'claude_code', 'claude']); assert.notEqual(link.physicalId, gpt);
+    assert.deepEqual([f.hosts.get(gpt).provider, f.hosts.get(gpt).settings.model, f.bridge.records.has(gpt)], ['openai', 'gpt-test', false], 'the GPT child is not flipped in place');
+  } finally { clean(root, f); }
+});
