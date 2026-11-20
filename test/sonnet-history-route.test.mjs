@@ -227,7 +227,7 @@ test('CLAUDE SDK chat: >200 turns, the early fact through the real MCP server ha
   const late = await f.bridge.sdkHistory(saved, out.running, out.turn, new AbortController().signal)({});
   assert.equal(late.error.code, 'turn_not_current');
   assert.equal(sessionNamespace, 'codex_bridge_sessions');
-  assert.deepEqual(sessionTools.tools.map(x => x.name), ['read', 'manage']); // sessions.manage is not expanded
+  assert.deepEqual(sessionTools.tools.map(x => x.name), ['read', 'manage', 'mailbox']); // sessions.manage is not expanded; mailbox carries correlated child-to-creator messages
   assert.deepEqual(sessionTools.tools[1].inputSchema.properties.operation.enum, ['create', 'send', 'queue', 'start_queue', 'interrupt', 'fork']);
   assert.deepEqual(f.calls.find(c => c.method === 'thread/start').params.dynamicTools.map(d => d.name), ['codex_bridge_sessions']); // a Claude chat's host keeps its session tools; the SDK gets read_history directly
 });

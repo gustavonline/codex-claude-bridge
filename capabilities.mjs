@@ -171,6 +171,8 @@ export async function instructions(native, record, additionalContext) {
     // Turns only start in an unarchived chat. The SDK transcript may still end
     // with this chat's own archive result from before the user unarchived it.
     record.archived === false ? 'This chat was not archived when this turn started; an earlier archive result in this conversation may be outdated.' : null,
+    // A chat another chat created can answer to it without the person copying anything: the mailbox report, never a message into that chat.
+    record.sessionCreate?.callerThreadId ? `This chat was created by chat ${record.sessionCreate.callerThreadId}. To ask it a question, report progress or return your result, use the codex_bridge_sessions mailbox tool (operation report, a stable requestId per message). Its replies arrive as normal messages here.` : null,
     record.options.baseInstructions, config.instructions, config.developer_instructions,
     record.options.developerInstructions, record.modeInstructions, ...files,
     ...contextFragments(additionalContext, 'application').map(c => `Application context from ${JSON.stringify(c.source)}:\n${c.value}`),

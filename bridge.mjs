@@ -20,7 +20,7 @@ import { forkThread } from './fork.mjs';
 import { configurationMirror } from './mirror.mjs';
 import { beginNative, captureNative } from './native-turns.mjs';
 import { isClaude, provider, nativeSelection, adoptNativeThread, finishQueueMigration, reloadNativeHost, handoffContext, legacyClaudeHost, nativeModels, advertisedLevels, chooseEffort, normalizeNativeEffort } from './providers.mjs';
-import { sessionCall, sessionNamespace, withSessionTools } from './sessions.mjs';
+import { mailPointer, sessionCall, sessionNamespace, withSessionTools } from './sessions.mjs';
 import { messageStream, submission, steerTurn, steeringResult, settleSteering } from './steering.mjs';
 import { claudeDecision, claudeDenial, mergeClaudeModels, normalizeModels, recordCatalog, recordOffered, storedModels } from './connections.mjs';
 import { ResponsesRouter } from './plugins/codex-claude/home/providers.mjs';
@@ -1145,6 +1145,11 @@ export class Bridge {
     }
     if (this.localResponses && !internal.localRouted)
       return this.localResponses.request(method, params, (m, p) => this.request(m, p, { ...internal, localRouted: true }));
+    // A chat with unread messages from chats it created: its next turn carries an untrusted pointer to them (never their content, never a wake).
+    if (method === 'turn/start' && typeof params.threadId === 'string' && !params.additionalContext?.bridge_session_mail) {
+      const pointer = mailPointer(this, params.threadId);
+      if (pointer) params = { ...params, additionalContext: { ...(params.additionalContext ?? {}), bridge_session_mail: pointer } };
+    }
     if (['thread/start', 'thread/resume', 'thread/fork', 'thread/settings/update', 'turn/start'].includes(method)
       && (this.records.has(params.threadId) || isClaude(params.model))
       && params.approvalsReviewer != null && params.approvalsReviewer !== 'user')
