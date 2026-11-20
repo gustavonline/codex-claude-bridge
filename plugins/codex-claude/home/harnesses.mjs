@@ -36,7 +36,7 @@ const descriptors = [
   { id: 'codex', label: 'Codex', transport: 'Codex app-server (native)', executes: true, toolBoundary: 'codex' },
   { id: 'claude-agent-sdk', label: 'Claude Code', transport: '@anthropic-ai/claude-agent-sdk', executes: true, toolBoundary: 'codex-mcp', executable: 'claude' },
   { id: 'antigravity', label: 'Gemini (Antigravity)', transport: 'ACP: agy acp', executable: 'agy', minimumVersion: '1.5.0', auth: 'Google account in the browser (oauth-personal)',
-    reason: 'Antigravity runs its own shell and file edits. ACP approval prompts are not a sandbox, so it stays off until an enforced boundary matching Codex permissions is proven.' },
+    reason: 'A workspace\'s own Antigravity hooks run commands outside the Codex sandbox, without asking, at every session start and model call. It stays off until its whole process runs inside a boundary that matches Codex permissions.' },
   { id: 'cursor', label: 'Cursor', transport: '@cursor/sdk', auth: 'Cursor account',
     reason: 'The Cursor SDK reports no command or file approval support, so Codex permissions cannot be honoured.' },
   { id: 'muse', label: 'Muse Code', transport: '@muse-code/sdk', auth: 'Muse account', reason: 'Not qualified in Model Bridge yet.' },
@@ -77,15 +77,15 @@ export function harnessRefusal(route) {
   return Object.assign(new Error(`${h ? h.label : 'This harness'} is not available in Model Bridge yet, so nothing was sent. ${h?.reason ?? ''}`.trim()), { code: 'harness_not_qualified' });
 }
 
-// Prepared launch for Antigravity's official ACP server (`agy acp`, flags verified on 1.5.13), used once its tool boundary is qualified.
-// The Google-account route (oauth-personal) uses its OWN profile through GEMINI_HOME, the isolation the installed runtime's login uses; ambient
-// Gemini/Google/ADC and other provider variables are removed so a parent shell can never switch it to API-key or Agent Platform billing.
-// Measured on 1.5.13: even with GEMINI_HOME and an absolute --app-data-dir, the server log goes to $HOME/.gemini/tmp/…, so the log is pinned
-// inside the profile. `--sandbox` is NOT passed: it can silently do nothing, and it is no substitute for a boundary matching Codex permissions.
-const googleOverride = /^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|VERTEX|ANTIGRAVITY_)/;
+// Prepared launch for Antigravity's official ACP server (`agy acp`, flags verified on 1.5.13). Nothing calls it: Antigravity is not qualified
+// (docs/antigravity-qualification.md). The Google-account route (oauth-personal) runs with auto-update off and file credential storage, and every
+// ambient Gemini/Google/ADC/agy and other provider variable is removed, so a parent shell can never switch it to API-key or Agent Platform billing.
+// Measured on 1.5.13: GEMINI_HOME moves neither the login nor state (both stay under $HOME/.gemini) and the server log follows only --log-file,
+// so the log is pinned in the given directory. `--sandbox` is not passed: it can silently do nothing and is not a boundary.
+const inherited = /^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|VERTEX|ANTIGRAVITY_|AGY_|OPENAI_|ANTHROPIC_|CODEX_|BRIDGE_|CLAUDE_CODE_)/;
 export function antigravityLaunch({ executable, profileDir, env = process.env }) {
   if (!isAbsolute(executable ?? '') || !isAbsolute(profileDir ?? '')) throw Object.assign(new Error('Antigravity needs an absolute executable and profile path'), { code: 'route_invalid' });
-  const kept = Object.fromEntries(Object.entries(env).filter(([key]) => !googleOverride.test(key) && !/^(OPENAI_|ANTHROPIC_|CODEX_|BRIDGE_|CLAUDE_CODE_)/.test(key)));
-  return { command: executable, args: ['acp', '--disable-telemetry', '--log-file', join(profileDir, 'logs', 'acp-server.log')], authMethod: 'oauth-personal',
-    env: { ...kept, GEMINI_HOME: profileDir } };
+  const kept = Object.fromEntries(Object.entries(env).filter(([key]) => !inherited.test(key)));
+  return { command: executable, args: ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(profileDir, 'logs', 'acp-server.log')], authMethod: 'oauth-personal',
+    env: { ...kept, GEMINI_HOME: profileDir, AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1' } };
 }

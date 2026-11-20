@@ -39,7 +39,7 @@ test('statuses keep runtime, sign-in, models and execution as separate facts; a 
   const none = harnessStatuses({ find: () => null }), found = harnessStatuses({ find: name => name === 'agy' ? '/opt/agy' : null });
   assert.deepEqual(none.map(h => h.id), harnesses.filter(h => !h.executes).map(h => h.id)); assert.ok(!none.some(h => h.id === 'codex' || h.id === 'claude-agent-sdk'));
   for (const h of [...none, ...found]) assert.deepEqual([h.signIn, h.catalog, h.execution, typeof h.reason], ['unknown', 'unknown', 'not_qualified', 'string']);
-  const agy = found.find(h => h.id === 'antigravity'); assert.deepEqual([agy.runtime, agy.minimumVersion, agy.executable], ['found', '1.5.0', 'agy']); assert.match(agy.reason, /not a sandbox/);
+  const agy = found.find(h => h.id === 'antigravity'); assert.deepEqual([agy.runtime, agy.minimumVersion, agy.executable], ['found', '1.5.0', 'agy']); assert.match(agy.reason, /outside the Codex sandbox/);
   assert.equal(none.find(h => h.id === 'antigravity').runtime, 'not_found'); assert.equal(none.find(h => h.id === 'cursor').runtime, 'not_applicable');
 });
 
@@ -53,16 +53,16 @@ test('Home lists each other harness with its real state and reason, offers no ac
   const rows = nodes(h.elements.controls).filter(n => /(^| )harness-row( |$)/.test(n.className));
   assert.ok(list.length >= 9); assert.equal(rows.length, list.length); assert.ok(rows.every(r => !nodes(r).some(n => n.tag === 'button')), 'no action for a harness that does not run here');
   const agy = rows.find(r => nodes(r).some(n => n.tag === 'h3' && n.textContent === 'Gemini (Antigravity)'));
-  assert.match(nodes(agy).map(n => n.textContent).join(' '), /(Needs agy|agy found) · Not available in Bridge yet/); assert.match(h.text('controls'), /approval prompts are not a sandbox/);
+  assert.match(nodes(agy).map(n => n.textContent).join(' '), /(Needs agy|agy found) · Not available in Bridge yet/); assert.match(h.text('controls'), /hooks run commands outside the Codex sandbox/);
   const forged = structuredClone(status); forged.controls.harnesses[0].execution = 'qualified';
   const g = show(forged); assert.equal(nodes(g.elements.controls).some(n => /harness-row/.test(n.className ?? '')), false, 'a claimed qualification is not shown');
 });
 
 test('the prepared Antigravity launch pins the Google-account route to its own profile and log, and drops every ambient Gemini, Google, ADC or other provider override', () => {
-  const env = { HOME: '/h', PATH: '/bin', GEMINI_HOME: '/someone-elses', GEMINI_API_KEY: 'x', GOOGLE_API_KEY: 'x', GOOGLE_APPLICATION_CREDENTIALS: '/adc.json', GOOGLE_CLOUD_PROJECT: 'p', GOOGLE_GENAI_USE_VERTEXAI: 'true', CLOUDSDK_CONFIG: '/c', OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_OAUTH_TOKEN: 'x' };
+  const env = { HOME: '/h', PATH: '/bin', GEMINI_HOME: '/someone-elses', AGY_ACP_CCPA_PROJECT: 'p', AGY_ACP_ENABLE_OAUTH: '0', GEMINI_API_KEY: 'x', GOOGLE_API_KEY: 'x', GOOGLE_APPLICATION_CREDENTIALS: '/adc.json', GOOGLE_CLOUD_PROJECT: 'p', GOOGLE_GENAI_USE_VERTEXAI: 'true', CLOUDSDK_CONFIG: '/c', OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_OAUTH_TOKEN: 'x' };
   const spec = antigravityLaunch({ executable: '/opt/agy', profileDir: '/state/gemini', env });
-  assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin', GEMINI_HOME: '/state/gemini' }); assert.equal(spec.authMethod, 'oauth-personal');
-  assert.deepEqual(spec.args, ['acp', '--disable-telemetry', '--log-file', '/state/gemini/logs/acp-server.log']); assert.ok(!spec.args.includes('--sandbox'), 'never presented as a boundary');
+  assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin', GEMINI_HOME: '/state/gemini', AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1' }); assert.equal(spec.authMethod, 'oauth-personal');
+  assert.deepEqual(spec.args, ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', '/state/gemini/logs/acp-server.log']); assert.ok(!spec.args.includes('--sandbox'), 'never presented as a boundary');
   assert.throws(() => antigravityLaunch({ executable: 'agy', profileDir: '/s' }), { code: 'route_invalid' });
 });
 

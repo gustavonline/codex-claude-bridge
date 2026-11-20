@@ -7,7 +7,7 @@ Model Bridge sits beneath the unmodified Codex desktop. A **harness** is the run
 | Codex | Codex app-server (native) | Yes | Native; Bridge does not change it. |
 | Claude Code | `@anthropic-ai/claude-agent-sdk` 0.3.325 | Yes | No native tools: every action goes through the Codex MCP tools, so Codex's sandbox and approvals apply. |
 | Custom Responses endpoints | Codex app-server with a Bridge provider | Yes | Native Codex execution against the saved endpoint. |
-| Gemini (Antigravity) | ACP, `agy acp` (1.5.0 or newer) | No | agy runs its own shell and file edits. ACP permission prompts are not a sandbox. It stays off until a boundary matching the Codex permissions is enforced and proven. |
+| Gemini (Antigravity) | ACP, `agy acp` (1.5.0 or newer) | No | A workspace's own Antigravity hooks run commands outside the Codex sandbox, without asking, at every session start and model call. See [the qualification](antigravity-qualification.md). |
 | Cursor | `@cursor/sdk` | No | The SDK reports no command or file approval support. |
 | Muse Code | `@muse-code/sdk` | No | Not qualified. |
 | Grok, fx, Kiro | ACP | No | ACP agents with their own tools; not qualified. |
@@ -51,16 +51,6 @@ A persistent query avoids about 0.65–0.9 s of CLI start per warm turn. Model l
 
 ## Known limits
 
-- **Antigravity, observed natively** (1.5.13, installed by the coordinator; no sign-in, no session, throwaway homes):
-  - `initialize` answers in about 0.3 s and offers `oauth-personal`, `oauth-business`, `gemini-api-key` and `agent-platform` (ADC).
-  - Sessions support resume, load, list and close, but not rewind. The agent supports appending to the system prompt.
-  - The server log goes to `$HOME/.gemini/tmp/…` even with `GEMINI_HOME` and an absolute `--app-data-dir`. With `--log-file` inside the profile, nothing is written to `$HOME` or the workspace.
-  - `agy acp` offers `--agent`, `--process-per-session`, `--ide-mcp-port` and `--sandbox`. It has no per-session `--settings`; only the plain CLI does.
-- **Antigravity, not yet observed:** what a session writes to the workspace, whether a custom agent's tool allowlist really leaves only MCP tools, and what `--sandbox` enforces. These need a signed-in session. Until then they come only from T3's integration and Google's docs, and are not enforcement evidence.
-- `antigravityLaunch()` prepares the Google-account route:
-  - its own profile through `GEMINI_HOME`, with the log pinned inside it;
-  - every other ambient `GEMINI_*`, `GOOGLE_*`, `CLOUDSDK_*` and Vertex variable dropped;
-  - no `--sandbox`, which can silently do nothing.
-
-  Nothing calls it yet.
+- Antigravity was qualified signed-in on 20 November and refused; see [the qualification](antigravity-qualification.md). An MCP-only session is possible natively, but repository hooks run outside Codex's sandbox. Gemini Neon is not in this account's server catalog.
+- `antigravityLaunch()` prepares the Google-account route. It pins the log inside the profile, drops ambient `GEMINI_*`, `GOOGLE_*`, `CLOUDSDK_*` and Vertex variables, and does not pass `--sandbox`. On 1.5.13, `GEMINI_HOME` moves only logs: the login and state stay under `$HOME/.gemini`. Nothing calls this function.
 - Native Mac desktop behaviour after these changes needs the desktop owner's run.
