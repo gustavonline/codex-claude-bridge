@@ -59,7 +59,7 @@ export function acpClient(child, { onRequest, onNotification, maxLine = 8 * 1024
 
 // Opens one Antigravity session. `mcpHandler(req, res)` serves Bridge's Codex MCP tools over HTTP; `codexTools` are their names; `onEvent`
 // receives { type: 'text', text } | { type: 'tool', id, title, status } | { type: 'permission', title, allowed }. `start` is injectable for tests.
-export async function open({ executable, cwd, home, agentName, mcpHandler, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable }) {
+export async function open({ executable, cwd, home, agentName, mcpHandler, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume' }) {
   if (!(await available())) fail('harness_boundary_unavailable', 'Antigravity needs Model Bridge\'s process sandbox, which is not available on this system, so nothing was started.');
   const runDir = sandboxRunDir(), mcpSocket = join(runDir, 'mcp.sock'), http = createServer(mcpHandler);
   await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
@@ -86,7 +86,10 @@ export async function open({ executable, cwd, home, agentName, mcpHandler, codex
   try {
     await acp.request('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'model-bridge', version: '0.3.0' } });
     await acp.request('authenticate', { methodId: spec.authMethod });
-    const session = await acp.request('session/new', { cwd, mcpServers: [{ type: 'http', name: 'codex', url: box.mcpUrl, headers: [] }] });
+    // A follow-up turn continues the chat's own agy session (resume: no history replay); a new chat gets a new session.
+    const mcpServers = [{ type: 'http', name: 'codex', url: box.mcpUrl, headers: [] }];
+    if (resume) sessionId = resume;
+    const session = resume ? { sessionId: resume, ...(await acp.request(resumeMethod, { sessionId: resume, cwd, mcpServers })) } : await acp.request('session/new', { cwd, mcpServers });
     sessionId = session.sessionId;
     return {
       sessionId, catalog: catalogOf(session), decisions: box.decisions,

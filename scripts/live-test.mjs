@@ -11,10 +11,15 @@ import { deleteSession } from '@anthropic-ai/claude-agent-sdk';
 import { Peer } from '../rpc.mjs';
 import { errorMetadata } from '../logging.mjs';
 
-const { values } = parseArgs({ options: { run: { type: 'boolean' }, 'copy-codex-auth': { type: 'boolean' }, scenario: { type: 'string' }, app: { type: 'string' }, source: { type: 'string' }, report: { type: 'string' } } });
+const { values } = parseArgs({ options: { run: { type: 'boolean' }, 'copy-codex-auth': { type: 'boolean' }, scenario: { type: 'string' }, app: { type: 'string' }, source: { type: 'string' }, report: { type: 'string' }, 'claude-model': { type: 'string' }, 'gpt-model': { type: 'string' } } });
 if (!values.run) throw new Error('This test consumes Claude and Codex quota. Pass --run to authorize synthetic test turns.');
 if (!values['copy-codex-auth']) throw new Error('Live GPT checks copy Codex auth.json to disposable private state. Pass --copy-codex-auth to opt in; compatibility checks need no auth copy.');
 if (values.scenario && !['native', 'steering', 'lifecycle'].includes(values.scenario)) throw new Error('Unknown scenario');
+// Test budget: every live model call uses the cheapest tier of its family, named explicitly and checked against what the runtime advertises
+// (below, before any turn). Claude: the Haiku family. GPT: a Luna model ("fast and affordable" in the native catalog). Effort is always low.
+const claudeModel = values['claude-model'], gptModel = values['gpt-model'];
+if (!/^(haiku|claude-haiku-[\w.-]+)$/.test(claudeModel ?? '') || !/^gpt-[\w.]+-luna$/.test(gptModel ?? ''))
+  throw new Error('Live tests run only on the cheapest tier: pass --claude-model haiku (or a claude-haiku-* model) and --gpt-model gpt-<version>-luna, both as advertised by model/list.');
 const root = mkdtempSync(join(tmpdir(), 'bridge-live-')), source = join(root, 'source'), state = join(root, 'state');
 mkdirSync(source, { mode: 0o700 });
 writeFileSync(join(source, 'config.toml'), 'model_provider = "openai"\n', { mode: 0o600 });
@@ -92,16 +97,17 @@ async function settledArchivedTurn(threadId, turnId) {
   }
   throw new Error('Archived turn did not settle');
 }
-const options = { cwd: root, model: 'sonnet', sandbox: 'read-only', approvalPolicy: 'never',
+const options = { cwd: root, model: claudeModel, sandbox: 'read-only', approvalPolicy: 'never',
   developerInstructions: 'Synthetic bridge integration test. Use only this conversation and the requested bridge session tools. Never read personal context, files or external tools.' };
 try {
   await connect();
   const catalog = (await peer.request('model/list', {})).data;
-  const gpt = catalog.find(m => m.model === 'gpt-6-luna') ?? catalog.find(m => !/^(claude|opus|sonnet|haiku)/.test(m.model));
-  assert.ok(gpt);
+  const gpt = catalog.find(m => m.model === gptModel);
+  if (!gpt) throw new Error(`${gptModel} is not advertised by this runtime's model/list; no model was called.`);
+  if (!catalog.some(m => m.model === claudeModel)) throw new Error(`${claudeModel} is not advertised by this runtime's model/list; no model was called.`);
   if (values.scenario === 'lifecycle') {
     const cases = [];
-    for (const model of ['sonnet', gpt.model]) {
+    for (const model of [claudeModel, gpt.model]) {
       const threadId = (await peer.request('thread/start', { ...options, dynamicTools: [
         { type: 'function', name: 'steering_gate', description: 'Synthetic lifecycle test gate; archives this disposable chat when released. Call once when instructed.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
       ] })).thread.id;
@@ -129,14 +135,14 @@ try {
         await gate.archiveFinished.promise;
         const completed = await settledArchivedTurn(threadId, started.turn.id);
         expect(`${model}_self_archive_acknowledged`, gate.archived === true);
-        expect(`${model}_self_archive_turn_terminal`, model === 'sonnet' ? completed.status === 'completed' : ['completed', 'interrupted'].includes(completed.status));
+        expect(`${model}_self_archive_turn_terminal`, model === claudeModel ? completed.status === 'completed' : ['completed', 'interrupted'].includes(completed.status));
         const saved = JSON.parse(readFileSync(join(state, 'threads', `${threadId}.json`), 'utf8'));
         expect(`${model}_archive_and_history_persisted`, saved.archived === true && saved.turns.length === 2);
         expect(`${model}_archive_pauses_queue`, (await peer.request('thread/queue/list', { threadId })).data[0]?.id === queued.id);
         await peer.request('thread/unarchive', { threadId });
         expect(`${model}_unarchive_keeps_queue_paused`, (await peer.request('thread/queue/list', { threadId })).data[0]?.id === queued.id);
         await peer.request('thread/queue/delete', { threadId, queuedSubmissionId: queued.id });
-        const childModel = model === 'sonnet' ? gpt.model : 'sonnet';
+        const childModel = model === claudeModel ? gpt.model : claudeModel;
         const child = await send(fork.id, 'Reply with the remembered PREFIX code only. Do not use tools.', { model: childModel, effort: 'low' });
         expect(`${model}_fork_handoff_memory`, child.text.includes(marker));
         cases.push({ threadId: fork.id, path: fork.path, model: childModel, marker });
@@ -152,7 +158,7 @@ try {
   } else if (values.scenario === 'steering') {
     report.steeringSubmissions = 0;
     const cases = [];
-    for (const model of ['sonnet', gpt.model]) {
+    for (const model of [claudeModel, gpt.model]) {
       const threadId = (await peer.request('thread/start', { ...options, dynamicTools: [
         { type: 'function', name: 'steering_gate', description: 'Synthetic test gate. Call once when instructed.', inputSchema: { type: 'object', properties: {}, additionalProperties: false } },
       ] })).thread.id;

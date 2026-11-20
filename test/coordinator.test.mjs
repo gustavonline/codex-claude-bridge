@@ -110,7 +110,7 @@ test('create refuses wrong models, missing fields, unknown callers and widened o
   const f = primary();
   try {
     const caller = await gpt(f);
-    for (const [args, expected] of [[{ model: 'gpt-test' }, /Claude model/], [{ model: 'claude-unknown' }, /does not advertise/],
+    for (const [args, expected] of [[{ model: 'gpt-test' }, /create needs a model from read models/], [{ model: 'claude-unknown' }, /does not advertise/],
       [{ text: ' ' }, /nonempty/], [{ requestId: 'short' }, /requestId/], [{ threadId: caller }, /does not take threadId/]])
       assert.match((await create(f, caller, args)).error, expected);
     assert.match((await create(f, randomUUID())).error, /does not belong/);

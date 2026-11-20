@@ -3,7 +3,7 @@ import { withSessionTools } from './sessions.mjs';
 
 export const isClaude = value => typeof value === 'string' && (/^claude-/.test(value) || ['opus', 'sonnet', 'haiku'].includes(value));
 export const nativeProvider = record => record.nativeProvider ?? 'openai';
-export const provider = record => record.provider === 'native' ? nativeProvider(record) : 'claude_code';
+export const provider = record => record.provider === 'native' ? nativeProvider(record) : record.provider === 'antigravity' ? 'antigravity' : 'claude_code';
 // An old managed Claude chat whose native HOST thread was created on the non-executing claude_code provider. Native binds a thread to the
 // provider that created it (same-ID resume on another provider is refused, and unsubscribing does not release the writer), so such a chat can
 // only reach a GPT model as a NEW physical thread. A fresh managed chat (host on the configured provider) and a managed chat that already
