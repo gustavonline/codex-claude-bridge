@@ -27,6 +27,7 @@
     "antigravity.mjs",
     "harness-sandbox.mjs",
     "harness-relay.mjs",
+    "harness-mcp-relay.mjs",
     "fork.mjs",
     "history.mjs",
     "logging.mjs",

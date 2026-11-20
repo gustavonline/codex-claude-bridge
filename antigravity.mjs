@@ -3,7 +3,8 @@
 // an MCP-only main agent (`tools: []`, so agy has no native file, shell or web tools); and the permission answer, which admits only the exact
 // Codex MCP tools Bridge serves. Every effect therefore goes through Codex's own tools, its sandbox and its approvals, as for Claude Code.
 // The catalog is what the signed-in account's session reports; nothing is added. Linux only: elsewhere `open` refuses before starting anything.
-import { createServer } from 'node:http';
+import { createServer } from 'node:net';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { sandboxAvailable, sandboxRunDir, startSandboxed } from './harness-sandbox.mjs';
@@ -57,16 +58,18 @@ export function acpClient(child, { onRequest, onNotification, maxLine = 8 * 1024
   return { request, notify: (method, params) => send({ jsonrpc: '2.0', method, params }) };
 }
 
-// Opens one Antigravity session. `mcpHandler(req, res)` serves Bridge's Codex MCP tools over HTTP; `codexTools` are their names; `onEvent`
+// The stdio MCP server agy launches inside the boundary: a fixed relay to Bridge's Unix socket (ACP v1 requires stdio MCP; no loopback TCP).
+export const mcpRelay = fileURLToPath(new URL('./harness-mcp-relay.mjs', import.meta.url));
+// Opens one Antigravity session. `mcpServe(stream)` serves Bridge's Codex MCP tools on one relayed connection; `codexTools` are their names; `onEvent`
 // receives { type: 'text', text } | { type: 'tool', id, title, status } | { type: 'permission', title, allowed }. `start` is injectable for tests.
-export async function open({ executable, cwd, home, agentName, mcpHandler, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume' }) {
+export async function open({ executable, cwd, home, agentName, mcpServe, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable, resume = null, resumeMethod = 'session/resume' }) {
   if (!(await available())) fail('harness_boundary_unavailable', 'Antigravity needs Model Bridge\'s process sandbox, which is not available on this system, so nothing was started.');
-  const runDir = sandboxRunDir(), mcpSocket = join(runDir, 'mcp.sock'), http = createServer(mcpHandler);
+  const runDir = sandboxRunDir(), mcpSocket = join(runDir, 'mcp.sock'), http = createServer(stream => { stream.on('error', () => {}); Promise.resolve(mcpServe(stream)).catch(() => stream.destroy()); });
   await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
   // The real install path: the sandbox mounts the runtime's own directory, so a symlinked `agy` is resolved first.
   const spec = antigravityLaunch({ executable: realpathSync(executable), logDir: runDir, env });
   let box;
-  try { box = await start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd, env: { ...spec.env, TMPDIR: '/tmp' }, writable: [join(home, '.gemini')], allow: googleEndpoints, mcpSocket, runDir }); }
+  try { box = await start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd, env: { ...spec.env, TMPDIR: '/tmp' }, readable: [mcpRelay], writable: [join(home, '.gemini')], allow: googleEndpoints, runDir }); }
   catch (error) { http.close(); throw error; }
   let sessionId = null;
   const acp = acpClient(box.child, {
@@ -87,7 +90,7 @@ export async function open({ executable, cwd, home, agentName, mcpHandler, codex
     await acp.request('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'model-bridge', version: '0.3.0' } });
     await acp.request('authenticate', { methodId: spec.authMethod });
     // A follow-up turn continues the chat's own agy session (resume: no history replay); a new chat gets a new session.
-    const mcpServers = [{ type: 'http', name: 'codex', url: box.mcpUrl, headers: [] }];
+    const mcpServers = [{ name: 'codex', command: process.execPath, args: [mcpRelay, mcpSocket], env: [] }];
     if (resume) sessionId = resume;
     const session = resume ? { sessionId: resume, ...(await acp.request(resumeMethod, { sessionId: resume, cwd, mcpServers })) } : await acp.request('session/new', { cwd, mcpServers });
     sessionId = session.sessionId;

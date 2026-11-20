@@ -8,7 +8,7 @@ import { join, isAbsolute } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { open } from '../antigravity.mjs';
 
@@ -18,15 +18,14 @@ const home = homedir(), agents = join(home, '.gemini', 'config', 'agents'), name
 mkdirSync(agents, { recursive: true }); writeFileSync(join(agents, name + '.md'), (await import('../antigravity.mjs')).agentDefinition(name));
 const ws = mkdtempSync(join(tmpdir(), 'bridge-agy-live-')); writeFileSync(join(ws, 'README.txt'), 'live workspace\n');
 const calls = [], events = [];
-const mcpHandler = async (req, res) => {
+const mcpServe = async stream => {
   const server = new McpServer({ name: 'codex', version: '0' });
   server.tool('probe_echo', 'Echo text back (Model Bridge live check).', { text: z.string() }, async ({ text }) => { calls.push(text); return { content: [{ type: 'text', text: 'echo:' + text }] }; });
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined }); res.on('close', () => { transport.close(); server.close(); });
-  await server.connect(transport); let body = ''; req.on('data', b => { body += b; }); req.on('end', () => transport.handleRequest(req, res, body ? JSON.parse(body) : undefined));
+  stream.on('close', () => server.close().catch(() => {})); await server.connect(new StdioServerTransport(stream, stream));
 };
 const report = {}; const t0 = performance.now(); let session;
 try {
-  session = await open({ executable: agy, cwd: ws, home, agentName: name, mcpHandler, codexTools: new Set(['probe_echo']), onEvent: e => events.push({ ...e, at: Math.round(performance.now() - t0) }) });
+  session = await open({ executable: agy, cwd: ws, home, agentName: name, mcpServe, codexTools: new Set(['probe_echo']), onEvent: e => events.push({ ...e, at: Math.round(performance.now() - t0) }) });
   report.openMs = Math.round(performance.now() - t0); report.catalog = session.catalog;
   await session.configure({ model, level });
   let t = performance.now(); const first = await session.prompt('Call the probe_echo tool with text live, then reply with its result.');

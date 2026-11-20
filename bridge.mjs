@@ -28,7 +28,7 @@ import { ResponsesRouter } from './plugins/codex-claude/home/providers.mjs';
 import { findExecutable, harnessModelId, harnessRefusal, isHarnessModel, parseHarnessModelId } from './plugins/codex-claude/home/harnesses.mjs';
 import { agentDefinition, open as openAntigravity } from './antigravity.mjs';
 import { sandboxAvailable } from './harness-sandbox.mjs';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { readAllTurns } from './continuity.mjs';
 import { runtimeHandoff } from './runtime-handoff.mjs';
 import { overlayHistory, pageTurns, pageItems } from './custom-turns.mjs';
@@ -1830,7 +1830,7 @@ export class Bridge {
       if (!runtime || !(await sandboxAvailable())) return { models: [], levels: [], reason: runtime ? 'boundary_unavailable' : 'runtime_not_found' };
       const cwd = mkdtempSync(join(tmpdir(), 'bridge-agy-catalog-'));
       try {
-        const session = await openAntigravity({ ...runtime, cwd, agentName: this.antigravityAgent(runtime.home), mcpHandler: (_q, r) => { r.statusCode = 404; r.end(); }, codexTools: new Set() });
+        const session = await openAntigravity({ ...runtime, cwd, agentName: this.antigravityAgent(runtime.home), mcpServe: stream => stream.destroy(), codexTools: new Set() });
         try { return { models: session.catalog.models.map(m => ({ id: harnessModelId('antigravity', 'google', m.id), model: m.id, name: m.name })), levels: session.catalog.levels }; }
         finally { await session.close(); }
       } catch (error) { this.log('antigravity.catalog_failed', errorMetadata(error)); return { models: [], levels: [], reason: 'catalog_failed' }; }
@@ -1897,15 +1897,12 @@ export class Bridge {
     this.emit('thread/status/changed', { threadId, status: { type: 'active', activeFlags: [] } });
     let text = null, session = null;
     // The shared Codex MCP facade (the same tools a Claude chat gets: find_tools/call_tool, shell in the Codex sandbox, the session tools and
-    // the mailbox, read_history), served over HTTP to the sandbox and bound to this turn; a fresh server per HTTP request (stateless transport).
-    const mcpHandler = async (req, res) => {
-      try {
-        const mcp = makeTools({ native: this.native, desktop: { request: (...args) => this.toolRequest(...args) }, record, turn, item, signal: controller.signal,
-          archiveSelf: () => this.request('thread/archive', { threadId }), history: this.sdkHistory(record, running, turn, controller.signal) });
-        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined }); res.on('close', () => { transport.close(); mcp.instance.close(); });
-        await mcp.instance.connect(transport); let body = ''; req.on('data', b => { body += b; });
-        req.on('end', () => { let parsed; try { parsed = body ? JSON.parse(body) : undefined; } catch { res.statusCode = 400; res.end(); return; } transport.handleRequest(req, res, parsed); });
-      } catch { res.statusCode = 500; res.end(); }
+    // the mailbox, read_history), bound to this turn, on a Unix socket agy reaches only through its stdio relay; a fresh server per connection.
+    const mcpServe = async stream => {
+      const mcp = makeTools({ native: this.native, desktop: { request: (...args) => this.toolRequest(...args) }, record, turn, item, signal: controller.signal,
+        archiveSelf: () => this.request('thread/archive', { threadId }), history: this.sdkHistory(record, running, turn, controller.signal) });
+      stream.on('close', () => { mcp.instance.close().catch(() => {}); });
+      await mcp.instance.connect(new StdioServerTransport(stream, stream));
     };
     try {
       controller.signal.throwIfAborted();
@@ -1914,7 +1911,7 @@ export class Bridge {
         record.nativePersisted = true; this.save(record);
       }
       const runtime = this.antigravityRuntime(); if (!runtime) throw new Error('Antigravity (agy) is no longer found on this system; nothing was sent.');
-      session = await openAntigravity({ ...runtime, cwd: record.thread.cwd, agentName: this.antigravityAgent(runtime.home), mcpHandler,
+      session = await openAntigravity({ ...runtime, cwd: record.thread.cwd, agentName: this.antigravityAgent(runtime.home), mcpServe,
         codexTools: new Set(['find_tools', 'call_tool', 'find_skills', 'read_skill', 'shell', 'read_history']), resume: record.acpSessionId,
         onEvent: event => {
           if (event.type !== 'text' || running.finished) return;

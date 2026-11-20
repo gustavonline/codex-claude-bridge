@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { open, permissionAnswer, catalogOf, agentDefinition, googleEndpoints } from '../antigravity.mjs';
+import { open, permissionAnswer, catalogOf, agentDefinition, googleEndpoints, mcpRelay } from '../antigravity.mjs';
 
 // The Antigravity adapter's own contract, against a scripted ACP agent (real stdio JSON-RPC, no Google, no agy). The live proof is
 // scripts/live-antigravity.mjs; this pins the sequence, the catalog, the permission answer, cancellation and teardown offline.
@@ -36,7 +36,7 @@ function harness() {
   const seen = () => calls.stderr.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
   return { calls, start, seen };
 }
-const base = h => ({ executable: process.execPath, cwd: mkdtempSync(join(tmpdir(), 'bridge-agy-')), home: '/home/someone', agentName: 'bridge-mcp-abc', mcpHandler: (_q, r) => r.end(), codexTools: new Set(['find_tools', 'call_tool']), start: h.start, available: () => true });
+const base = h => ({ executable: process.execPath, cwd: mkdtempSync(join(tmpdir(), 'bridge-agy-')), home: '/home/someone', agentName: 'bridge-mcp-abc', mcpServe: stream => stream.destroy(), codexTools: new Set(['find_tools', 'call_tool']), start: h.start, available: () => true });
 
 test('without the process boundary nothing is started and the refusal says why', async () => {
   let started = false;
@@ -47,13 +47,16 @@ test('without the process boundary nothing is started and the refusal says why',
 test('a session runs inside the boundary with the Google-account route, the account\'s own catalog and the Codex MCP endpoint; choices outside the catalog are refused', async () => {
   const h = harness(), s = await open(base(h)), opts = h.calls.start;
   assert.deepEqual(opts.allow, [...googleEndpoints]); assert.deepEqual(opts.writable, ['/home/someone/.gemini']); assert.ok(opts.args.includes('--agent') && opts.args.at(-1) === 'bridge-mcp-abc');
-  assert.ok(opts.mcpSocket.startsWith(opts.runDir + '/')); assert.equal(opts.env.TMPDIR, '/tmp'); assert.ok(!Object.keys(opts.env).some(k => /^(GEMINI_API|GOOGLE_)/.test(k)));
+  assert.deepEqual(opts.readable, [mcpRelay], 'only the fixed stdio relay is added inside'); assert.equal(opts.mcpSocket, undefined, 'no loopback TCP forward'); assert.equal(opts.env.TMPDIR, '/tmp'); assert.ok(!Object.keys(opts.env).some(k => /^(GEMINI_API|GOOGLE_)/.test(k)));
   assert.deepEqual(s.catalog, { models: [{ id: 'gemini-flash', name: 'Gemini Flash' }, { id: 'claude-sonnet', name: 'Claude Sonnet' }], levels: ['low', 'high'], current: { model: 'gemini-flash', level: 'high' } });
   await s.configure({ model: 'claude-sonnet', level: 'low' });
   await assert.rejects(s.configure({ model: 'gemini-neon' }), { code: 'model_not_available' }); await assert.rejects(s.configure({ level: 'max' }), { code: 'unsupported_reasoning_effort' });
   const sent = h.seen().map(m => m.got);
   assert.deepEqual(sent.filter(x => x !== 'response'), ['initialize', 'authenticate', 'session/new', 'session/set_config_option', 'session/set_config_option'], 'nothing unknown was sent');
-  const sessionNew = h.seen().find(m => m.got === 'session/new').params; assert.deepEqual(sessionNew.mcpServers, [{ type: 'http', name: 'codex', url: 'http://127.0.0.1:18081/mcp', headers: [] }]);
+  // ACP's mandatory stdio MCP form: agy launches the fixed relay to Bridge's own Unix socket in the sandbox run directory.
+  const sessionNew = h.seen().find(m => m.got === 'session/new').params, [server] = sessionNew.mcpServers;
+  assert.deepEqual([sessionNew.mcpServers.length, server.name, server.command, server.args[0], server.env], [1, 'codex', process.execPath, mcpRelay, []]);
+  assert.ok(server.args[1].startsWith(opts.runDir + '/') && server.args[1].endsWith('.sock'));
   assert.equal(h.seen().find(m => m.got === 'authenticate').params.methodId, 'oauth-personal');
   await s.close(); assert.equal(h.calls.closed, true);
 });
