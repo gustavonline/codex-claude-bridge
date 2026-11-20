@@ -26,6 +26,8 @@ This is an MVP preview, not full Codex parity. Checks are intentionally divided 
 
 ## Explicitly unsupported or unqualified
 
+- Harnesses other than Codex, Claude Code and custom Responses endpoints are listed but not executed; see [harnesses](harnesses.md) for each reason and the measured Claude lifecycle.
+
 Explicit compaction, native review/rollback/deletion, exact Claude quota/context-meter parity, arbitrary Fast/service tiers, voice/realtime, goals, automation and cloud/remote orchestration are not implemented as full Claude equivalents. Relevant turn-mutating routes fail explicitly. Native sharing, export and global search are not qualified for complete Claude history.
 
 **Historical 4 November connection-manager boundary (superseded for explicitly bound isolated custom-provider trials below).** Home is a read-only diagnostic phase. Not yet qualified, and not to be read as supported: real local inference, OpenRouter in the Bridge's own UI, a multi-provider model picker, automatic activation on an ordinary launch (today an ordinary Dock, Spotlight or login launch is GPT-only), a trial on the normal profile, and chat history after a provider is disabled or the plugin is uninstalled. A synthetic probe on 2026-11-04 accepted a per-thread provider given only as runtime configuration and rejected the same request without it, with the configuration file unchanged and no model call; that supports a design, not these features. The owner's requirements and the target flow are recorded in [Architecture](architecture.md#connection-manager-target-not-implemented).

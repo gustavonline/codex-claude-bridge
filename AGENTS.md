@@ -1,6 +1,6 @@
 # Codex + Claude contributor instructions
 
-This is Gustav Online’s independent macOS bridge beneath the unmodified Codex desktop UI. Keep it small: Codex owns its native provider, tooling and desktop; the official Claude Code runtime owns Claude execution. No model API proxy, replacement UI, private IPC bypass, credential extraction or signature spoofing.
+This is Gustav Online’s independent macOS bridge beneath the unmodified Codex desktop UI. Keep it small: Codex owns its native provider, tooling and desktop; each other harness runs through its official runtime (Claude Code through the Agent SDK; further harnesses only through the upstream routes in docs/harnesses.md, as optional, lazily found runtimes). A harness executes only once its tool boundary, lifecycle, history and denial are qualified; until then it is listed with its real state, never as ready. No model API proxy, generic chat-completion substitute, replacement UI, private IPC bypass, credential extraction or signature spoofing.
 
 One writer owns overlapping code. Reviewers read an immutable revision. Use temporary profiles for integration tests; never inject test prompts into existing user chats or include local auth, logs, personal instructions or histories in commits. Preserve the source profile and existing installation state. Stop/restart only when the installed bridge reports idle.
 
