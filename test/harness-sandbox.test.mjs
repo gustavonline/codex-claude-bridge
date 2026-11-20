@@ -86,7 +86,7 @@ test('the macOS backend generates a private, randomly named Codex profile: minim
   const toml = codexSandboxConfig({ profile: 'bridge-0123456789abcdef', readable: ['/opt/agy/1.5.13', '/System/Library/OpenSSL/openssl.cnf'], writable: ['/Users/x/.gemini', '/run/bridge'], domains: ['daily-cloudcode-pa.googleapis.com', 'oauth2.googleapis.com'], proxyPort: 40123 });
   assert.match(toml, /^approval_policy = "never"\ndefault_permissions = "bridge-0123456789abcdef"\n\[features\]\nnetwork_proxy = true\n/);
   assert.match(toml, /":minimal" = "read"\n"\/opt\/agy\/1\.5\.13" = "read"\n"\/System\/Library\/OpenSSL\/openssl\.cnf" = "read"\n"\/Users\/x\/\.gemini" = "write"\n"\/run\/bridge" = "write"\n/);
-  assert.match(toml, /enabled = true\nproxy_url = "http:\/\/127\.0\.0\.1:40123"\nenable_socks5 = false\n\[permissions\."bridge-0123456789abcdef"\.network\.domains\]\n"daily-cloudcode-pa\.googleapis\.com" = "allow"\n"oauth2\.googleapis\.com" = "allow"\n$/);
+  assert.match(toml, /enabled = true\nproxy_url = "http:\/\/127\.0\.0\.1:40123"\nenable_socks5 = false\nallow_upstream_proxy = true\n\[permissions\."bridge-0123456789abcdef"\.network\.domains\]\n"daily-cloudcode-pa\.googleapis\.com" = "allow"\n"oauth2\.googleapis\.com" = "allow"\n$/);
   assert.doesNotMatch(toml, /trust|projects|127\.0\.0\.1" = "allow"|localhost|":root"/, 'no trust entry, no loopback domain, no broad read');
   assert.deepEqual(codexSandboxArgs({ profile: 'bridge-x', cwd: '/empty', mcpSocket: '/run/bridge/mcp.sock', command: '/opt/agy/agy', args: ['acp'] }),
     ['sandbox', '-P', 'bridge-x', '-C', '/empty', '--allow-unix-socket', '/run/bridge/mcp.sock', '--', '/opt/agy/agy', 'acp']);

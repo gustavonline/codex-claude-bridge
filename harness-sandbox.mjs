@@ -14,7 +14,7 @@
 //    every descendant it saw; a process that detached itself before that is not guaranteed to be found (documented residual).
 import { spawn, execFile, execFileSync } from 'node:child_process';
 import { createServer, connect } from 'node:net';
-import { mkdtempSync, mkdirSync, rmSync, accessSync, constants, lstatSync, readlinkSync, existsSync, writeFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, accessSync, constants, lstatSync, readlinkSync, existsSync, writeFileSync, realpathSync, statSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, isAbsolute, dirname } from 'node:path';
@@ -23,9 +23,14 @@ import { fileURLToPath } from 'node:url';
 const relay = fileURLToPath(new URL('./harness-relay.mjs', import.meta.url));
 export const bwrapPath = '/usr/bin/bwrap';
 // Whether the boundary works here: probed once per process (asynchronously, bounded), then remembered.
-let probed = null;
+let probed = null; const canaries = new Map();
 export function sandboxAvailable({ platform = process.platform, path = bwrapPath, codex = process.env.BRIDGE_REAL_CODEX } = {}) {
-  if (platform === 'darwin') return probed ??= codexSandboxCanary(codex);
+  // macOS: the canary runs once per Codex binary identity (path, size, mtime), so a desktop CLI update re-runs it and refuses if it fails.
+  if (platform === 'darwin') {
+    let identity; try { const st = statSync(codex); identity = `${codex}:${st.size}:${st.mtimeMs}`; } catch { return Promise.resolve(false); }
+    if (!canaries.has(identity)) canaries.set(identity, codexSandboxCanary(codex));
+    return canaries.get(identity);
+  }
   if (platform !== 'linux') return Promise.resolve(false);
   return probed ??= new Promise(resolve => {
     try { accessSync(path, constants.X_OK); } catch { resolve(false); return; }
@@ -139,7 +144,9 @@ export function codexSandboxConfig({ profile, readable = [], writable = [], doma
   const lines = ['approval_policy = "never"', `default_permissions = ${tomlKey(profile)}`, '[features]', 'network_proxy = true', `[permissions.${tomlKey(profile)}.filesystem]`, '":minimal" = "read"'];
   for (const p of readable) lines.push(`${tomlKey(p)} = "read"`);
   for (const p of writable) lines.push(`${tomlKey(p)} = "write"`);
-  lines.push(`[permissions.${tomlKey(profile)}.network]`, 'enabled = true', ...(proxyPort ? [`proxy_url = "http://127.0.0.1:${proxyPort}"`] : []), 'enable_socks5 = false', `[permissions.${tomlKey(profile)}.network.domains]`);
+  // allow_upstream_proxy: decided explicitly. The managed proxy may chain through the host's own configured proxy (policy applies first), as
+  // a corporate or VM network requires; the harness itself only ever sees the managed proxy.
+  lines.push(`[permissions.${tomlKey(profile)}.network]`, 'enabled = true', ...(proxyPort ? [`proxy_url = "http://127.0.0.1:${proxyPort}"`] : []), 'enable_socks5 = false', 'allow_upstream_proxy = true', `[permissions.${tomlKey(profile)}.network.domains]`);
   for (const d of domains) lines.push(`${tomlKey(d)} = "allow"`);
   return lines.join('\n') + '\n';
 }

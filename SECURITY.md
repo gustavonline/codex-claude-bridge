@@ -47,3 +47,11 @@ intent. Shell calls preserve the resolved sandbox, never escalate it, and reject
 missing permissions. A new action requiring a bridge approval prompt rejects
 unknown policies rather than inheriting a more permissive default. Preapproved
 MCP tools keep their separate configured approval rules.
+
+## Harness boundary (Antigravity)
+
+Antigravity runs inside a whole-process boundary: bubblewrap on Linux, and Codex's own sandbox on macOS, which is still in qualification. It works in an empty directory, has no native tools, and reaches the network only through an allowlisting proxy to Google's endpoints. Residual risks:
+- **Allowed hosts are a channel.** An exact-domain allowlist does not stop data from leaving through the allowed Google hosts. No proxy sees inside TLS, and code running as agy can read agy's own sign-in in `~/.gemini`.
+- **agy's profile is trusted.** Customizations in agy's own profile (`~/.gemini/config`), as opposed to a workspace's, are loaded and run inside the boundary.
+- **macOS teardown is best effort.** There is no PID namespace. A descendant that detaches itself is killed only if it was seen first.
+- **Bridge's MCP tools carry authority.** They act with the chat's own Codex permissions, the same as for a Claude chat.
