@@ -80,3 +80,25 @@ test('inside bubblewrap the whole tree is read-only except its own state and /tm
   const alive = (() => { try { return execFileSync('pgrep', ['-f', 'sleep 3137'], { encoding: 'utf8' }).trim(); } catch { return ''; } })();
   assert.equal(alive, '', 'no process of the sandbox is left'); target.close(); host.close(); rmSync(homeDir, { recursive: true, force: true });
 });
+
+test('the macOS backend generates a private, randomly named Codex profile: minimal reads, own writes, exact domains and one exact socket; nothing trusted or copied', async () => {
+  const { codexSandboxConfig, codexSandboxArgs } = await import('../harness-sandbox.mjs');
+  const toml = codexSandboxConfig({ profile: 'bridge-0123456789abcdef', readable: ['/opt/agy/1.5.13', '/System/Library/OpenSSL/openssl.cnf'], writable: ['/Users/x/.gemini', '/run/bridge'], domains: ['daily-cloudcode-pa.googleapis.com', 'oauth2.googleapis.com'], proxyPort: 40123 });
+  assert.match(toml, /^approval_policy = "never"\ndefault_permissions = "bridge-0123456789abcdef"\n\[features\]\nnetwork_proxy = true\n/);
+  assert.match(toml, /":minimal" = "read"\n"\/opt\/agy\/1\.5\.13" = "read"\n"\/System\/Library\/OpenSSL\/openssl\.cnf" = "read"\n"\/Users\/x\/\.gemini" = "write"\n"\/run\/bridge" = "write"\n/);
+  assert.match(toml, /enabled = true\nproxy_url = "http:\/\/127\.0\.0\.1:40123"\nenable_socks5 = false\n\[permissions\."bridge-0123456789abcdef"\.network\.domains\]\n"daily-cloudcode-pa\.googleapis\.com" = "allow"\n"oauth2\.googleapis\.com" = "allow"\n$/);
+  assert.doesNotMatch(toml, /trust|projects|127\.0\.0\.1" = "allow"|localhost|":root"/, 'no trust entry, no loopback domain, no broad read');
+  assert.deepEqual(codexSandboxArgs({ profile: 'bridge-x', cwd: '/empty', mcpSocket: '/run/bridge/mcp.sock', command: '/opt/agy/agy', args: ['acp'] }),
+    ['sandbox', '-P', 'bridge-x', '-C', '/empty', '--allow-unix-socket', '/run/bridge/mcp.sock', '--', '/opt/agy/agy', 'acp']);
+});
+
+test('the Codex backend runs a command with the generated profile here too, denies foreign reads, keeps its cwd read-only, and leaves nothing on close', { skip: !process.env.BRIDGE_REAL_CODEX_TEST && 'set BRIDGE_REAL_CODEX_TEST to a codex CLI to run it' }, async () => {
+  const base = mkdtempSync(join(homedir(), '.cache', 'bridge-cbt-')), cwd = join(base, 'cwd'), state = join(base, 'state'), foreign = join(base, 'foreign');
+  for (const d of [cwd, state, foreign]) mkdirSync(d); writeFileSync(join(foreign, 'secret'), 's');
+  try {
+    const script = `cat ${foreign}/secret >/dev/null 2>&1 && echo LEAK || echo DENIED; touch ${cwd}/w 2>/dev/null && echo WROTE || echo RO; printf x > ${state}/own && echo OWN`;
+    const box = await startSandboxed({ platform: 'darwin', codex: process.env.BRIDGE_REAL_CODEX_TEST, command: '/bin/sh', args: ['-c', script], cwd, env: { PATH: '/usr/bin:/bin', HOME: homedir() }, writable: [state], allow: [], stateRoot: join(base, 'sb') });
+    let out = ''; box.child.stdout.on('data', b => { out += b; }); await new Promise(r => box.child.once('exit', r));
+    assert.deepEqual(out.trim().split('\n'), ['DENIED', 'RO', 'OWN']); assert.ok(['exited', 'killed'].includes((await box.close()).state));
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});

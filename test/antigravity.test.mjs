@@ -47,16 +47,18 @@ test('without the process boundary nothing is started and the refusal says why',
 test('a session runs inside the boundary with the Google-account route, the account\'s own catalog and the Codex MCP endpoint; choices outside the catalog are refused', async () => {
   const h = harness(), s = await open(base(h)), opts = h.calls.start;
   assert.deepEqual(opts.allow, [...googleEndpoints]); assert.deepEqual(opts.writable, ['/home/someone/.gemini']); assert.ok(opts.args.includes('--agent') && opts.args.at(-1) === 'bridge-mcp-abc');
-  assert.deepEqual(opts.readable, [mcpRelay], 'only the fixed stdio relay is added inside'); assert.equal(opts.mcpSocket, undefined, 'no loopback TCP forward'); assert.equal(opts.env.TMPDIR, '/tmp'); assert.ok(!Object.keys(opts.env).some(k => /^(GEMINI_API|GOOGLE_)/.test(k)));
+  assert.deepEqual(opts.readable, [mcpRelay], 'only the fixed stdio relay is added inside'); assert.ok(opts.mcpSocket.startsWith(opts.runDir + '/'), 'the exact socket the Mac grant names');
+  assert.match(opts.cwd, /bridge-agy-cwd-/, 'agy works in a generated empty directory, never the workspace'); assert.notEqual(opts.cwd, base(h).cwd);
+  assert.deepEqual(Object.keys(opts.env).filter(k => !['HOME', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL', 'TZ', 'SSH_CONNECTION', 'AGY_CLI_DISABLE_AUTO_UPDATE', 'AGY_ACP_FORCE_FILE_STORAGE'].includes(k)), [], 'only the allowlisted environment'); assert.ok(!Object.keys(opts.env).some(k => /^(GEMINI_API|GOOGLE_)/.test(k)));
   assert.deepEqual(s.catalog, { models: [{ id: 'gemini-flash', name: 'Gemini Flash' }, { id: 'claude-sonnet', name: 'Claude Sonnet' }], levels: ['low', 'high'], current: { model: 'gemini-flash', level: 'high' } });
   await s.configure({ model: 'claude-sonnet', level: 'low' });
   await assert.rejects(s.configure({ model: 'gemini-neon' }), { code: 'model_not_available' }); await assert.rejects(s.configure({ level: 'max' }), { code: 'unsupported_reasoning_effort' });
   const sent = h.seen().map(m => m.got);
   assert.deepEqual(sent.filter(x => x !== 'response'), ['initialize', 'authenticate', 'session/new', 'session/set_config_option', 'session/set_config_option'], 'nothing unknown was sent');
   // ACP's mandatory stdio MCP form: agy launches the fixed relay to Bridge's own Unix socket in the sandbox run directory.
-  const sessionNew = h.seen().find(m => m.got === 'session/new').params, [server] = sessionNew.mcpServers;
+  const sessionNew = h.seen().find(m => m.got === 'session/new').params, [server] = sessionNew.mcpServers; assert.equal(sessionNew.cwd, opts.cwd, 'the session lives in the empty directory');
   assert.deepEqual([sessionNew.mcpServers.length, server.name, server.command, server.args[0], server.env], [1, 'codex', process.execPath, mcpRelay, []]);
-  assert.ok(server.args[1].startsWith(opts.runDir + '/') && server.args[1].endsWith('.sock'));
+  assert.equal(server.args[1], opts.mcpSocket);
   assert.equal(h.seen().find(m => m.got === 'authenticate').params.methodId, 'oauth-personal');
   await s.close(); assert.equal(h.calls.closed, true);
 });

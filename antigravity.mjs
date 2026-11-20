@@ -6,6 +6,8 @@
 import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { realpathSync } from 'node:fs';
 import { sandboxAvailable, sandboxRunDir, startSandboxed } from './harness-sandbox.mjs';
 import { antigravityLaunch } from './plugins/codex-claude/home/harnesses.mjs';
@@ -68,9 +70,13 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
   await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
   // The real install path: the sandbox mounts the runtime's own directory, so a symlinked `agy` is resolved first.
   const spec = antigravityLaunch({ executable: realpathSync(executable), logDir: runDir, env });
+  // agy works in a generated EMPTY directory, never the workspace: it has no native tools (the MCP-only agent), every file and command goes
+  // through the Codex tools in the real workspace, and so a project's own agy customizations (.agents/hooks.json, rules, skills, MCP configs)
+  // and Codex config are never loaded at all. The workspace itself is not even visible inside the boundary.
+  const agyCwd = mkdtempSync(join(tmpdir(), 'bridge-agy-cwd-'));
   let box;
-  try { box = await start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd, env: { ...spec.env, TMPDIR: '/tmp' }, readable: [mcpRelay], writable: [join(home, '.gemini')], allow: googleEndpoints, runDir }); }
-  catch (error) { http.close(); throw error; }
+  try { box = await start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd: agyCwd, env: spec.env, readable: [mcpRelay], writable: [join(home, '.gemini')], allow: googleEndpoints, runDir, mcpSocket }); }
+  catch (error) { http.close(); rmSync(agyCwd, { recursive: true, force: true }); throw error; }
   let sessionId = null;
   const acp = acpClient(box.child, {
     onRequest: async (method, params) => {
@@ -85,14 +91,14 @@ export async function open({ executable, cwd, home, agentName, mcpServe, codexTo
       else if (u.sessionUpdate === 'tool_call' || u.sessionUpdate === 'tool_call_update') onEvent({ type: 'tool', id: u.toolCallId, title: u.title ?? null, status: u.status ?? null });
     },
   });
-  const close = async () => { const r = await box.close(); http.close(); return r; };
+  const close = async () => { const r = await box.close(); http.close(); rmSync(agyCwd, { recursive: true, force: true }); return r; };
   try {
     await acp.request('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'model-bridge', version: '0.3.0' } });
     await acp.request('authenticate', { methodId: spec.authMethod });
     // A follow-up turn continues the chat's own agy session (resume: no history replay); a new chat gets a new session.
     const mcpServers = [{ name: 'codex', command: process.execPath, args: [mcpRelay, mcpSocket], env: [] }];
     if (resume) sessionId = resume;
-    const session = resume ? { sessionId: resume, ...(await acp.request(resumeMethod, { sessionId: resume, cwd, mcpServers })) } : await acp.request('session/new', { cwd, mcpServers });
+    const session = resume ? { sessionId: resume, ...(await acp.request(resumeMethod, { sessionId: resume, cwd: agyCwd, mcpServers })) } : await acp.request('session/new', { cwd: agyCwd, mcpServers });
     sessionId = session.sessionId;
     return {
       sessionId, catalog: catalogOf(session), decisions: box.decisions,

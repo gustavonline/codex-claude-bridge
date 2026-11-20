@@ -6,10 +6,16 @@
 //  - there is no network: the process sees loopback only. Outbound HTTPS leaves through a Bridge-side CONNECT proxy that admits exact
 //    host:443 pairs (the provider's own endpoints), and Bridge's MCP endpoint is reachable on loopback. Both are relayed over Unix sockets;
 //  - it has its own PID namespace, so every child it started dies with it, and closing stdin or killing the sandbox ends the whole tree.
-// macOS has no bubblewrap: this boundary is Linux-only, and a harness that needs it is refused elsewhere.
-import { spawn, execFile } from 'node:child_process';
+// Two backends behind one contract, chosen by platform (never a fallback from one to the other: a boundary that fails refuses):
+//  - Linux: bubblewrap, as above (deterministic; its own PID namespace ends every descendant);
+//  - macOS: Codex's own sandbox (`codex sandbox -P <generated profile>`, Seatbelt), from the desktop's bundled CLI (BRIDGE_REAL_CODEX), with a
+//    generated, randomly named permission profile in a private CODEX_HOME, network only through Codex's managed proxy to exact domains, and
+//    one exact Unix socket (--allow-unix-socket) for Bridge's MCP relay. macOS has no PID namespace: teardown kills the process group and then
+//    every descendant it saw; a process that detached itself before that is not guaranteed to be found (documented residual).
+import { spawn, execFile, execFileSync } from 'node:child_process';
 import { createServer, connect } from 'node:net';
-import { mkdtempSync, rmSync, accessSync, constants, lstatSync, readlinkSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, accessSync, constants, lstatSync, readlinkSync, existsSync, writeFileSync, realpathSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, isAbsolute, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +24,8 @@ const relay = fileURLToPath(new URL('./harness-relay.mjs', import.meta.url));
 export const bwrapPath = '/usr/bin/bwrap';
 // Whether the boundary works here: probed once per process (asynchronously, bounded), then remembered.
 let probed = null;
-export function sandboxAvailable({ platform = process.platform, path = bwrapPath } = {}) {
+export function sandboxAvailable({ platform = process.platform, path = bwrapPath, codex = process.env.BRIDGE_REAL_CODEX } = {}) {
+  if (platform === 'darwin') return probed ??= codexSandboxCanary(codex);
   if (platform !== 'linux') return Promise.resolve(false);
   return probed ??= new Promise(resolve => {
     try { accessSync(path, constants.X_OK); } catch { resolve(false); return; }
@@ -95,13 +102,17 @@ export const sandboxRunDir = () => mkdtempSync(join(tmpdir(), 'bridge-sbx-'));
 const socketOk = path => Buffer.byteLength(path) <= 100;
 // Starts `command args` inside the boundary. `allow` are the CONNECT targets; `mcpSocket`, when given, is exposed inside as http://127.0.0.1:<port>.
 // Returns the child (stdio piped, for ACP), the inner MCP port, the proxy decisions, and close() that ends the whole tree and removes the run dir.
-export async function startSandboxed({ command, args, cwd, env = {}, readable = [], writable = [], allow = [], mcpSocket = null, runDir = null, upstream = upstreamProxy(), bwrap = bwrapPath, node = process.execPath }) {
+export async function startSandboxed(options) {
+  return (options.platform ?? process.platform) === 'darwin' ? startCodexSandboxed(options) : startBubblewrap(options);
+}
+async function startBubblewrap({ command, args, cwd, env = {}, readable = [], writable = [], allow = [], mcpSocket = null, runDir = null, upstream = upstreamProxy(), bwrap = bwrapPath, node = process.execPath }) {
   runDir ??= sandboxRunDir(); const proxySocket = join(runDir, 'proxy.sock'), decisions = [];
   if (!socketOk(proxySocket) || (mcpSocket && !socketOk(mcpSocket))) throw Object.assign(new Error('The sandbox run directory path is too long for its sockets'), { code: 'sandbox_invalid' });
   const proxy = await allowlistProxy(proxySocket, allow, { onDecision: d => decisions.push(d), upstream });
-  const proxyPort = 18080, mcpPort = 18081; // loopback inside the sandbox's own network namespace: nothing else listens there
+  const proxyPort = 18080; // loopback inside the sandbox's own network namespace: nothing else listens there
   const inner = { ...env, HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`, https_proxy: `http://127.0.0.1:${proxyPort}`, HTTP_PROXY: `http://127.0.0.1:${proxyPort}`, http_proxy: `http://127.0.0.1:${proxyPort}`, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
-  const forwards = [`${proxyPort}=${proxySocket}`, ...(mcpSocket ? [`${mcpPort}=${mcpSocket}`] : [])];
+  // Bridge's MCP socket (when given) lives in the run directory, which is bound inside; the harness reaches it through its own stdio relay.
+  const forwards = [`${proxyPort}=${proxySocket}`];
   if (mcpSocket && !mcpSocket.startsWith(runDir + '/')) throw Object.assign(new Error('The MCP socket must live in the sandbox run directory'), { code: 'sandbox_invalid' });
   // Inside, besides the system: the harness's own runtime directory, Node and the relay (read-only).
   const inside = [...new Set([dirname(command), dirname(node), relay, ...readable])];
@@ -117,5 +128,77 @@ export async function startSandboxed({ command, args, cwd, env = {}, readable = 
     proxy.close(); rmSync(runDir, { recursive: true, force: true });
     return { state: gone ? 'exited' : 'killed' };
   })();
-  return { child, runDir, mcpUrl: mcpSocket ? `http://127.0.0.1:${mcpPort}/mcp` : null, decisions, close, stderr: () => stderrTail };
+  return { child, runDir, decisions, close, stderr: () => stderrTail };
+}
+
+// ---- macOS: Codex's own sandbox --------------------------------------------------------------------------------------------------------
+// The generated config of one session: a private CODEX_HOME holds only this file. The profile name is random, nothing is trusted or copied from
+// the person's own Codex configuration, and the run directory is the only writable place besides the harness's own state.
+const tomlKey = value => JSON.stringify(value);
+export function codexSandboxConfig({ profile, readable = [], writable = [], domains = [], proxyPort = null }) {
+  const lines = ['approval_policy = "never"', `default_permissions = ${tomlKey(profile)}`, '[features]', 'network_proxy = true', `[permissions.${tomlKey(profile)}.filesystem]`, '":minimal" = "read"'];
+  for (const p of readable) lines.push(`${tomlKey(p)} = "read"`);
+  for (const p of writable) lines.push(`${tomlKey(p)} = "write"`);
+  lines.push(`[permissions.${tomlKey(profile)}.network]`, 'enabled = true', ...(proxyPort ? [`proxy_url = "http://127.0.0.1:${proxyPort}"`] : []), 'enable_socks5 = false', `[permissions.${tomlKey(profile)}.network.domains]`);
+  for (const d of domains) lines.push(`${tomlKey(d)} = "allow"`);
+  return lines.join('\n') + '\n';
+}
+// The files a Mac Node runtime needs beyond :minimal (measured: OpenSSL reads its system configuration before anything else runs).
+export const macRuntimeReads = ['/System/Library/OpenSSL/openssl.cnf'];
+export function codexSandboxArgs({ profile, cwd, mcpSocket, command, args }) {
+  return ['sandbox', '-P', profile, '-C', cwd, ...(mcpSocket ? ['--allow-unix-socket', mcpSocket] : []), '--', command, ...args];
+}
+function descendants(root) {
+  try {
+    const rows = execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8' }).trim().split('\n').map(l => l.trim().split(/\s+/).map(Number));
+    const kids = new Map(); for (const [p, pp] of rows) kids.set(pp, [...(kids.get(pp) ?? []), p]);
+    const out = [], stack = [root]; while (stack.length) for (const k of kids.get(stack.pop()) ?? []) { out.push(k); stack.push(k); }
+    return out;
+  } catch { return []; }
+}
+async function startCodexSandboxed({ command, args, cwd, env = {}, readable = [], writable = [], allow = [], mcpSocket = null, runDir = null, codex = process.env.BRIDGE_REAL_CODEX, node = process.execPath, stateRoot = null }) {
+  if (!isAbsolute(codex ?? '')) throw Object.assign(new Error('The Codex sandbox needs the desktop\'s Codex CLI (BRIDGE_REAL_CODEX)'), { code: 'harness_boundary_unavailable' });
+  runDir ??= sandboxRunDir();
+  // The private CODEX_HOME lives under Bridge state, not a temporary directory (Codex refuses helper binaries under /tmp); 0700 and removed after.
+  const homeRoot = stateRoot ?? join(dirname(runDir), 'codex-sandbox'); mkdirSync(homeRoot, { recursive: true, mode: 0o700 });
+  const codexHome = mkdtempSync(join(homeRoot, 'home-')), profile = 'bridge-' + randomBytes(8).toString('hex'), tmp = join(runDir, 'tmp'); mkdirSync(tmp, { mode: 0o700 });
+  // Read-only inside: the harness's runtime, Node, the caller's extra paths (the stdio MCP relay), Codex's own binary directory (its Linux
+  // sandbox re-executes it) and the few system files a runtime needs on the Mac. Nothing of the person's home, other tools or the workspace.
+  const inside = [...new Set([realpathSync(dirname(command)), dirname(node), realpathSync(dirname(codex)), ...readable, ...macRuntimeReads.filter(p => existsSync(p))])];
+  // Codex's managed proxy listens on a free local port of this session (the only place outbound traffic can leave, to `domains` only).
+  const proxyPort = await new Promise(r => { const sv = createServer(); sv.listen(0, '127.0.0.1', () => { const { port } = sv.address(); sv.close(() => r(port)); }); });
+  writeFileSync(join(codexHome, 'config.toml'), codexSandboxConfig({ profile, readable: [...inside, cwd], writable: [...writable, runDir], domains: allow.map(a => a.replace(/:443$/, '')), proxyPort }), { mode: 0o600 });
+  // The supervisor may chain its managed proxy through the host's own configured proxy (the allowlist applies first); the harness itself only
+  // ever sees Codex's managed proxy. Nothing else of Bridge's environment is passed.
+  const upstream = Object.fromEntries(['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy'].filter(k => typeof process.env[k] === 'string').map(k => [k, process.env[k]]));
+  const child = spawn(codex, codexSandboxArgs({ profile, cwd, mcpSocket, command, args }), { cwd, env: { ...upstream, ...env, CODEX_HOME: codexHome, TMPDIR: tmp }, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+  let stderrTail = ''; child.stderr.on('data', b => { stderrTail = (stderrTail + b).slice(-4000); });
+  child.on('error', () => { if (child.exitCode === null) child.emit('exit', 127, null); });
+  let closed = null, seen = new Set();
+  const watch = setInterval(() => { for (const p of descendants(child.pid)) seen.add(p); }, 500); watch.unref?.();
+  const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const close = () => closed ??= (async () => {
+    for (const p of descendants(child.pid)) seen.add(p);
+    child.stdin.end();
+    const gone = await Promise.race([new Promise(r => child.exitCode !== null || child.signalCode ? r(true) : child.once('exit', () => r(true))), new Promise(r => setTimeout(() => r(false), 3000))]);
+    try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+    for (const p of seen) try { process.kill(p, 'SIGKILL'); } catch {}
+    clearInterval(watch); await new Promise(r => setTimeout(r, 100));
+    const left = [...seen].filter(alive);
+    rmSync(codexHome, { recursive: true, force: true }); rmSync(runDir, { recursive: true, force: true });
+    return { state: left.length ? 'unconfirmed' : gone ? 'exited' : 'killed', ...(left.length ? { left: left.length } : {}) };
+  })();
+  return { child, runDir, decisions: [], close, stderr: () => stderrTail };
+}
+// The Mac canary, once per process: the generated profile must start a command and must DENY reading a file outside it. Anything else refuses.
+async function codexSandboxCanary(codex) {
+  if (!isAbsolute(codex ?? '') || !existsSync(codex)) return false;
+  const root = sandboxRunDir(), foreign = mkdtempSync(join(tmpdir(), 'bridge-canary-foreign-')), secret = join(foreign, 'canary');
+  writeFileSync(secret, 'canary'); mkdirSync(join(root, 'run'));
+  try {
+    const box = await startCodexSandboxed({ command: '/bin/sh', args: ['-c', `cat ${JSON.stringify(secret)} >/dev/null 2>&1 && echo LEAK || echo DENIED`], cwd: root, codex, runDir: join(root, 'run'), stateRoot: join(root, 'state') });
+    let out = ''; box.child.stdout.on('data', b => { out += b; }); await new Promise(r => box.child.once('exit', r)); await box.close();
+    return out.trim() === 'DENIED';
+  } catch { return false; }
+  finally { rmSync(root, { recursive: true, force: true }); rmSync(foreign, { recursive: true, force: true }); }
 }
