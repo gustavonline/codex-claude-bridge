@@ -45,7 +45,7 @@
     "transition-notice.mjs"
   ],
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node scripts/run-tests.mjs",
     "start": "node cli.mjs",
     "doctor": "node cli.mjs doctor",
     "check": "npm test && python3 -m py_compile launch.py mirror.py && node scripts/check-package.mjs",
