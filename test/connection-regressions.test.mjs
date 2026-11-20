@@ -23,6 +23,14 @@ const ack = () => async function* (a) {
 };
 function setup(extra = {}) { const root = mkdtempSync(join(tmpdir(), 'bridge-regress-')); createConnections(root); return { root, f: fixture('openai', { connectionRoot: root, ...extra }) }; }
 const clean = (root, f) => { f.close(); rmSync(root, { recursive: true, force: true }); };
+// RC13: a GPT switch is a hand-off to a NEW private physical thread (the desktop keeps the ID; the link names the child, whose queue is native's own).
+// `inPlace` is the Bridge's own un-routed model change: the in-place move a record saved before RC13 carries, whose GPT queue Bridge runs.
+const inPlace = (f, id) => f.bridge.request('thread/settings/update', { threadId: id, model: 'gpt-test', effort: 'low' }, { localRouted: true });
+const nativeQueue = f => { f.controls.native = async (method, p) => { if (method === 'thread/queue/add') f.hosts.get(p.threadId).queue.push({ id: `nq-${p.clientUserMessageId}`, clientUserMessageId: p.clientUserMessageId, input: p.input }); }; }; // the host keeps what native's own queue was given
+async function moved(f, id) {
+  await f.bridge.request('thread/settings/update', { threadId: id, model: 'gpt-test', effort: 'low' }); const link = f.bridge.localResponses.readLink(id);
+  assert.deepEqual([link.logicalId, link.kind, f.hosts.get(link.physicalId)?.provider, f.bridge.records.has(link.physicalId), f.bridge.records.get(id).provider], [id, 'native', 'openai', false, 'claude']); return link.physicalId;
+}
 async function activeTurn(f, id, gate) { f.controls.query = () => gate.promise; f.controls.messages = ack(); return (await f.send(id, 'running')).turn; }
 
 // ---- F3: history, discovery and reopen while disabled need no SDK
@@ -110,14 +118,19 @@ test('F2a thread/resume cannot make a hidden model the chat model', async () => 
     assert.equal((await f.bridge.request('thread/resume', { threadId: id, model: 'sonnet' })).model, 'sonnet', 'naming its own model is a true reopen');
   } finally { clean(root, f); }
 });
-test('F2b thread/resume while disabled does not flip a GPT chat to Claude', async () => {
+test('F2b thread/resume while disabled does not flip a GPT chat to Claude (a handed-off chat, and one moved in place before RC13)', async () => {
   const { root, f } = setup(); try {
     const id = await f.start('haiku'), t = (await f.send(id, 'x')).turn; await f.done(t.id);
-    await f.bridge.request('thread/settings/update', { threadId: id, model: 'gpt-test', effort: 'low' }); setEnabled(root, false);
+    const old = await f.start('haiku'), o = (await f.send(old, 'x')).turn; await f.done(o.id);
+    const P = await moved(f, id); await inPlace(f, old); setEnabled(root, false); const n = f.calls.length, k = f.queries.length;
     await assert.rejects(f.bridge.request('thread/resume', { threadId: id, model: 'sonnet' }), /disabled/);
-    const r = f.bridge.records.get(id);
+    const link = f.bridge.localResponses.readLink(id); assert.deepEqual([link.physicalId, link.kind, f.hosts.get(P).provider, f.hosts.get(P).settings.model], [P, 'native', 'openai', 'gpt-test'], 'still the same GPT child');
+    assert.deepEqual(f.calls.slice(n).filter(c => c.method === 'thread/start'), [], 'no Claude child created'); assert.equal(f.queries.length, k);
+    const g = await f.send(id, 'still gpt'); assert.equal((await f.done(g.turn.id)).params.turn.status, 'completed'); assert.equal(f.hosts.get(P).thread.turns.length, 1, 'ran on the GPT child');
+    await assert.rejects(f.bridge.request('thread/resume', { threadId: old, model: 'sonnet' }), /disabled/);
+    const r = f.bridge.records.get(old);
     assert.equal(r.provider, 'native'); assert.equal(r.model, 'gpt-test');
-    const g = await f.send(id, 'still gpt'); assert.equal((await f.done(g.turn.id)).params.turn.status, 'completed');
+    const h = await f.send(old, 'still gpt'); assert.equal((await f.done(h.turn.id)).params.turn.status, 'completed'); assert.equal(f.queries.length, k);
   } finally { clean(root, f); }
 });
 test('F2c thread/resume while disabled does not change the Claude model of a retained chat', async () => {
@@ -130,21 +143,26 @@ test('F2c thread/resume while disabled does not change the Claude model of a ret
 });
 
 // ---- GPT stays usable
-test('O2 GPT works while disabled: default start, new chat, move from Claude, native result, native queue', async () => {
+test('O2 GPT works while disabled: default start, new chat, hand-off from Claude, native result, native queue (and the queue of a chat moved in place before RC13)', async () => {
   const { root, f } = setup(); try {
     const id = await f.start('haiku'); const t = (await f.send(id, 'x')).turn; await f.done(t.id);
+    const old = await f.start('haiku'), o = (await f.send(old, 'x')).turn; await f.done(o.id);
     const n = f.queries.length; setEnabled(root, false);
     const started = await f.bridge.request('thread/start', { cwd: f.statePath }); assert.equal(started.model, 'gpt-test');
     const dflt = started.thread.id, a = await f.send(dflt, 'NATIVE_DEFAULT');
     assert.equal((await f.done(a.turn.id)).params.turn.status, 'completed');
     assert.ok(f.hosts.get(dflt).thread.turns.at(-1).items.some(i => i.text === 'NATIVE RESULT'));
-    await f.bridge.request('thread/settings/update', { threadId: id, model: 'gpt-test', effort: 'low' });
+    nativeQueue(f); const P = await moved(f, id); // the hand-off itself works while Claude is disabled
     const m = await f.send(id, 'MOVED'); assert.equal((await f.done(m.turn.id)).params.turn.status, 'completed');
-    const rec = f.bridge.records.get(id);
-    assert.equal(rec.provider, 'native'); assert.ok(rec.turns.at(-1).items.some(i => i.text === 'NATIVE RESULT')); assert.equal(rec.turns[0].id, t.id, 'Claude prefix retained');
-    assert.equal(f.queries.length, n);
-    const add = (await q(f, id, 'add', { clientUserMessageId: 'GPTQ', input: text('gpt queued') })).queuedSubmission;
-    const qs = await q(f, id, 'start', { queuedSubmissionId: add.id });
+    assert.ok(f.hosts.get(P).thread.turns.at(-1).items.some(i => i.text === 'NATIVE RESULT')); assert.equal(f.bridge.localResponses.readHandoff(P).turns[0].id, t.id, 'Claude prefix carried');
+    assert.equal(f.bridge.records.get(id).turns[0].id, t.id, 'and retained on the source'); assert.equal(f.queries.length, n);
+    await q(f, id, 'add', { clientUserMessageId: 'GPTQ', input: text('gpt queued') }); assert.deepEqual([f.hosts.get(P).queue.map(x => x.clientUserMessageId), f.bridge.records.get(id).queue ?? []], [['GPTQ'], []], 'native holds it, Bridge does not');
+    await q(f, id, 'start', { queuedSubmissionId: 'nq-GPTQ' });
+    assert.deepEqual(f.calls.filter(c => c.method.startsWith('thread/queue/')).map(c => [c.method, c.params.threadId]), [['thread/queue/add', P], ['thread/queue/start', P]], 'native\'s own queue: forwarded, not gated');
+    // A record moved in place before RC13: Bridge runs its GPT queue, ungated.
+    f.controls.native = undefined; await inPlace(f, old);
+    const add = (await q(f, old, 'add', { clientUserMessageId: 'GPTQ', input: text('gpt queued') })).queuedSubmission;
+    const qs = await q(f, old, 'start', { queuedSubmissionId: add.id });
     assert.equal((await f.done(qs.turn.id)).params.turn.status, 'completed'); assert.equal(f.queries.length, n, 'a GPT queue is not gated');
   } finally { clean(root, f); }
 });
@@ -246,16 +264,19 @@ test('F1 replays stay idempotent: a repeated start or steer of an already accept
     assert.equal(f.bridge.records.get(id).turns[0].steering.length, 1, 'accepted exactly once');
   } finally { gate.resolve(); clean(root, f); }
 });
-test('F1g control: a GPT chat queue/start while its native turn is active still steers', async () => {
+test('F1g control: a GPT chat queue/start while its native turn is active is not refused while disabled: forwarded to native\'s own queue (hand-off), or steered by Bridge (moved in place before RC13)', async () => {
   const { root, f } = setup(), hold = deferred(); try {
-    f.controls.nativeTurn = () => hold.promise;
-    const id = await f.start('haiku'), first = (await f.send(id, 'c')).turn; await f.done(first.id);
-    await f.bridge.request('thread/settings/update', { threadId: id, model: 'gpt-test', effort: 'low' });
+    f.controls.nativeTurn = () => hold.promise; nativeQueue(f);
+    const h = await f.start('haiku'), hf = (await f.send(h, 'c')).turn; await f.done(hf.id); const P = await moved(f, h);
+    const ht = (await f.send(h, 'gpt')).turn; await q(f, h, 'add', { clientUserMessageId: 'GQ', input: text('g') });
+    const id = await f.start('haiku'), first = (await f.send(id, 'c')).turn; await f.done(first.id); f.controls.native = undefined;
+    await inPlace(f, id);
     const nt = (await f.send(id, 'gpt')).turn;
     const sub = (await q(f, id, 'add', { clientUserMessageId: 'GQ', input: text('g') })).queuedSubmission;
-    setEnabled(root, false);
+    setEnabled(root, false); const k = f.queries.length;
+    await q(f, h, 'start', { queuedSubmissionId: 'nq-GQ' }); assert.deepEqual([f.calls.at(-1).method, f.calls.at(-1).params], ['thread/queue/start', { threadId: P, queuedSubmissionId: 'nq-GQ' }], 'forwarded to the GPT child');
     const r = await q(f, id, 'start', { queuedSubmissionId: sub.id }); assert.equal(r.turn.id, nt.id);
-    hold.resolve(); await f.done(nt.id);
+    hold.resolve(); await f.done(nt.id); await f.done(ht.id); assert.equal(f.queries.length, k, 'no Claude query');
   } finally { hold.resolve(); clean(root, f); }
 });
 
@@ -412,3 +433,4 @@ test('F10 on the Bridge: a transient partial catalog does not erase the saved vi
     assert.deepEqual(models(await f.bridge.request('model/list', {})), ['gpt-test', 'gpt-other', 'haiku', 'sonnet'], 'and returns as chosen');
   } finally { clean(root, f); }
 });
+

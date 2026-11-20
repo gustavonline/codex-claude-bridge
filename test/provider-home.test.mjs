@@ -42,16 +42,23 @@ const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { prot
 const ready = c => { const h = session(undefined, c); h(initialize); h({ jsonrpc: '2.0', method: 'notifications/initialized' }); return h; };
 const home = h => h({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'bridge_home', arguments: {} } }).result.structuredContent;
 const nodes = n => [n, ...n.children.flatMap(nodes)];
-const buttons = h => nodes(h.elements.controls).filter(n => n.tag === 'button');
-const click = (h, label) => {
-  const b = buttons(h).find(b => b.textContent === label); assert.ok(b, label);
-  // Open the real disclosure before using its default-model action.
-  nodes(h.elements.controls).filter(n => n.tag === 'details' && nodes(n).includes(b)).forEach(n => { n.open = true; });
-  for (const fn of b.listeners.click ?? []) fn({});
-};
+// v11: the Connections gear sits in the header actions and the breadcrumbs in the page title.
+const buttons = h => [...nodes(h.elements['page-title']), ...nodes(h.elements['header-actions']), ...nodes(h.elements.controls)].filter(n => n.tag === 'button');
+const find = (h, label) => buttons(h).find(b => b.textContent === label || b.getAttribute('aria-label') === label);
+const click = (h, label) => { const b = find(h, label); assert.ok(b, label); assert.equal(b.disabled, false, label + ' enabled'); for (const fn of b.listeners.click ?? []) fn({}); };
 const field = (h, label) => nodes(h.elements.controls).find(n => n.tag === 'label' && (n.own === label || n.own === label + ' '))?.children.at(-1);
-const input = (h, label, value) => { if (label === 'Name' && !field(h, label)) click(h, 'Add connection'); const f = field(h, label); assert.ok(f, label); f.value = value; for (const fn of f.listeners.input ?? []) fn({}); };
-async function round(h, server, label) { click(h, label); const m = h.sent('tools/call').at(-1); h.deliver(await server(m)); return m; }
+// v11 navigation: the gear (Home) or the breadcrumb (a connection page) leads to Connections; an open form is cancelled.
+const toConnections = h => { if (find(h, 'Connections')) click(h, 'Connections'); if (field(h, 'Name')) click(h, 'Cancel'); };
+const input = (h, label, value) => { if (label === 'Name' && !field(h, label)) { toConnections(h); click(h, 'Add connection'); } const f = field(h, label); assert.ok(f, label); f.value = value; for (const fn of f.listeners.input ?? []) fn({}); };
+// A connection's own page replaces the v7 provider pick buttons and selected-provider panel.
+const openProvider = (h, name) => { toConnections(h); click(h, name); };
+// Entries of the open connection's "Default for new chats" menu (v7: the Model select plus "Use selected model").
+const entries = h => buttons(h).filter(b => (b.getAttribute('data-focus-key') ?? '').startsWith('default-bridge-responses/'));
+const defaults = h => { if (!entries(h).length) click(h, 'Default for new chats'); return entries(h); };
+async function round(h, server, label) {
+  if (label === 'Use selected model') { const [entry] = defaults(h); assert.equal(entry.disabled, false); entry.listeners.click.forEach(fn => fn({})); } else click(h, label);
+  const m = h.sent('tools/call').at(-1); h.deliver(await server(m)); return m;
+}
 
 test('generic URL/auth references remain per provider; discovery uses only its exact credential and never follows HTTPS redirects', async () => {
   const root = temp(), creds = syntheticCredentials(), before = inventory(creds.dir), registry = new ProviderRegistry(root, creds.path);
@@ -101,17 +108,17 @@ test('shipped Home public MCP lifecycle connects/discovers/selects/enables real 
   h.deliver({ jsonrpc: '2.0', method: 'ui/notifications/host-context-changed', params: { theme: 'dark' } });
   assert.equal(field(h, 'Name').value, '<A&provider>'); assert.equal(field(h, 'Base URL').value, endpointA);
   await round(h, server, 'Connect'); assert.equal(net.calls.length, 0, 'saving does not contact an endpoint');
-  await round(h, server, 'Discover models'); assert.equal(net.calls.length, 1);
+  openProvider(h, '<A&provider>'); await round(h, server, 'Discover models'); assert.equal(net.calls.length, 1);
   assert.match(h.text('controls'), /<A&provider>|<model&name>/); assert.ok(h.created.every(n => n.tag !== 'img' && n.tag !== 'script'));
   await round(h, server, 'Use selected model');
-  const beforeDisable = home(server).controls, provider = beforeDisable.providers[0];
+  const beforeDisable = home(server).controls, provider = beforeDisable.providers.find(p => p.protocol === 'responses');
   assert.equal(provider.selected, provider.models[0].id); assert.equal(provider.protocol, 'responses');
-  await round(h, server, 'Disable provider'); assert.equal(home(server).controls.providers[0].enabled, false);
-  await round(h, server, 'Enable provider'); assert.equal(home(server).controls.providers[0].enabled, true);
+  await round(h, server, 'Disconnect'); assert.equal(home(server).controls.providers.at(-1).enabled, false);
+  await round(h, server, 'Reconnect'); assert.equal(home(server).controls.providers.at(-1).enabled, true);
   const registry = new ProviderRegistry(prepared.state); assert.equal(registry.all()[0].selected, provider.selected);
-  const reopened = ready(providerControls(prepared.bindingPath, { request: net.request })); assert.equal(home(reopened).controls.providers[0].selected, provider.selected);
+  const reopened = ready(providerControls(prepared.bindingPath, { request: net.request })); assert.equal(home(reopened).controls.providers.at(-1).selected, provider.selected);
   const list = server({ jsonrpc: '2.0', id: 3, method: 'tools/list' }).result.tools;
-  assert.equal(list.length, 7); assert.ok(list.slice(1).every(t => t._meta.ui.visibility[0] === 'app'));
+  assert.deepEqual(list.map(t => t.name), ['bridge_home', ...['status', 'auth_begin', 'auth_cancel', 'connect', 'refresh', 'select', 'enabled', 'slots'].map(a => 'bridge_provider_' + a)]); assert.ok(list.slice(1).every(t => t._meta.ui.visibility[0] === 'app'));
   assert.equal(list.find(t => t.name === 'bridge_provider_refresh').annotations.openWorldHint, true);
   assert.match(homeHtml(), /A discovered catalog does not prove authentication, tool support, inference compatibility or native picker refresh/);
   input(h, 'Name', 'Retained draft'); const retainedConnect = buttons(h).find(b => b.textContent === 'Connect');
@@ -146,24 +153,26 @@ test('uncertain provider write retains public-MCP status recovery without replay
   input(h, 'Name', 'A'); input(h, 'Base URL', endpointA); click(h, 'Connect');
   const call = h.sent('tools/call').at(-1), answer = await server(call);
   h.deliver({ jsonrpc: '2.0', method: 'ui/notifications/tool-cancelled' }); h.deliver(answer);
-  assert.equal(h.sent('tools/call').length, 1); assert.deepEqual(buttons(h).map(b => b.textContent), ['Read current state']);
-  const status = await round(h, server, 'Read current state'); assert.equal(status.params.name, 'bridge_provider_status');
-  assert.equal(home(server).controls.providers.length, 1, 'cancelled committed connect was not repeated');
-  await round(h, server, 'Discover models'); await round(h, server, 'Use selected model');
-  const provider = home(server).controls.providers[0], nativeCalls = [], router = new LocalResponsesRouter({ root: p.state, native: { request: async (method, args) => {
+  assert.equal(h.sent('tools/call').length, 1); assert.deepEqual(buttons(h).map(b => b.textContent), ['Retry state update']);
+  const status = await round(h, server, 'Retry state update'); assert.equal(status.params.name, 'bridge_provider_status'); assert.deepEqual(status.params.arguments, p.scope);
+  assert.equal(home(server).controls.providers.filter(v => v.protocol === 'responses').length, 1, 'cancelled committed connect was not repeated');
+  assert.equal(h.sent('tools/call').filter(m => m.params.name === 'bridge_provider_connect').length, 1);
+  openProvider(h, 'A'); await round(h, server, 'Discover models'); await round(h, server, 'Use selected model');
+  const provider = home(server).controls.providers.at(-1), nativeCalls = [], router = new LocalResponsesRouter({ root: p.state, native: { request: async (method, args) => {
     nativeCalls.push({ method, args }); if (method === 'model/list') return { data: [], nextCursor: null };
     return { thread: { id: 'declared-provider-thread' }, model: args.model, modelProvider: args.modelProvider };
   } } });
   await router.request('thread/start', { model: provider.selected }, () => { throw new Error(); });
-  await round(h, server, 'Disable provider'); const n = nativeCalls.length;
+  await round(h, server, 'Disconnect'); const n = nativeCalls.length;
   await assert.rejects(router.request('turn/start', { threadId: 'declared-provider-thread', input: [] }, () => {}), { code: 'provider_disabled' });
   assert.equal(nativeCalls.length, n);
   assert.equal(await router.request('thread/read', { threadId: 'declared-provider-thread' }, async () => 'retained native read'), 'retained native read');
   assert.equal(await router.request('thread/start', { model: 'gpt-test' }, async () => 'unchanged GPT'), 'unchanged GPT');
-  await assert.rejects(router.request('thread/queue/add', { threadId: 'declared-provider-thread' }, () => {}), { code: 'custom_provider_queue_not_qualified' });
+  // Custom-chat queueing is qualified now (desktop-provider-affinity covers the enabled path); a disabled connection refuses it before dispatch.
+  await assert.rejects(router.request('thread/queue/add', { threadId: 'declared-provider-thread' }, () => {}), { code: 'provider_disabled' }); assert.equal(nativeCalls.length, n);
 });
 
-test('copied plugin serves the actual provider entrypoint and v6 HTML over regular-file public MCP stdio, without owner environment or setup', async () => {
+test('copied plugin serves the actual provider entrypoint and current Home HTML over regular-file public MCP stdio, without owner environment or setup', async () => {
   const parent = temp(), p = prepareProviderHome(join(parent, 'scope')), copy = join(parent, 'plugin');
   cpSync(fileURLToPath(new URL('../plugins/codex-claude', import.meta.url)), copy, { recursive: true, force: false, errorOnExist: true });
   const messages = [initialize, { jsonrpc: '2.0', method: 'notifications/initialized' },
@@ -178,47 +187,52 @@ test('copied plugin serves the actual provider entrypoint and v6 HTML over regul
   try {
     await closed; assert.deepEqual(result, { code: 0, signal: null }); assert.equal(readFileSync(error, 'utf8'), '');
     const rows = readFileSync(output, 'utf8').trim().split('\n').map(JSON.parse);
-    assert.equal(rows.length, 4); assert.equal(rows.find(r => r.id === 2).result.tools.length, 7);
+    assert.equal(rows.length, 4); assert.equal(rows.find(r => r.id === 2).result.tools.length, 9);
     assert.equal(rows.find(r => r.id === 3).result.structuredContent.controls.kind, 'responses-trial');
     assert.equal(rows.find(r => r.id === 4).result.contents[0].text, homeHtml());
-    assert.equal(homeResource, 'ui://codex-claude/home-v7.html'); assert.doesNotMatch(JSON.stringify(rows), new RegExp(parent));
+    assert.equal(homeResource, 'ui://codex-claude/home-v11.html'); assert.doesNotMatch(JSON.stringify(rows), new RegExp(parent));
     assert.deepEqual(readdirSync(p.state), [], 'only status/resources were requested; no registry, HTTP, model or profile changes');
   } finally { clearTimeout(timer); if (!result) { child.kill('SIGKILL'); await closed; } fds.forEach(closeSync); }
 });
 
-test('Home switches among providers without losing per-provider choices; unrelated context keeps form and model drafts', async () => {
+test('Home switches among providers without losing per-provider choices; unrelated context keeps the form draft and each connection default', async () => {
   const parent = temp(), p = prepareProviderHome(join(parent, 'scope')), server = ready(providerControls(p.bindingPath, { request: requestFixture().request }));
   const h = harness(); h.deliver(hostReply(handshakeId(h), { hostCapabilities: { serverTools: {} } })); h.deliver(toolResult(home(server)));
-  input(h, 'Name', 'A'); input(h, 'Base URL', endpointA); await round(h, server, 'Connect'); await round(h, server, 'Discover models'); await round(h, server, 'Use selected model');
-  const a = home(server).controls.providers[0];
-  input(h, 'Name', 'B'); input(h, 'Base URL', endpointB); await round(h, server, 'Connect'); await round(h, server, 'Discover models'); await round(h, server, 'Use selected model');
-  const all = home(server).controls.providers, b = all.find(v => v.id !== a.id);
+  input(h, 'Name', 'A'); input(h, 'Base URL', endpointA); await round(h, server, 'Connect'); openProvider(h, 'A'); await round(h, server, 'Discover models'); await round(h, server, 'Use selected model');
+  const a = home(server).controls.providers.find(v => v.name === 'A');
+  input(h, 'Name', 'B'); input(h, 'Base URL', endpointB); await round(h, server, 'Connect'); openProvider(h, 'B'); await round(h, server, 'Discover models'); await round(h, server, 'Use selected model');
+  const all = home(server).controls.providers, b = all.find(v => v.name === 'B');
   assert.notEqual(a.selected, b.selected, 'same model slug gets a distinct provider namespace');
-  click(h, 'A');
+  openProvider(h, 'A');
   h.deliver({ jsonrpc: '2.0', method: 'ui/notifications/host-context-changed', params: { theme: 'light' } });
-  assert.equal(buttons(h).find(b => b.textContent === 'A').getAttribute('aria-pressed'), 'true'); assert.equal(field(h, 'Model').value, a.selected);
-  click(h, 'Add connection');
+  // v11 has no provider pick buttons or Model select: the connection page and its default menu show A's own choice.
+  assert.equal(h.text('page-title'), 'Model Bridge/Connections/A');
+  assert.deepEqual(defaults(h).map(e => [e.getAttribute('data-focus-key'), e.textContent.startsWith('✓ ')]), [['default-' + a.selected, true]]);
+  toConnections(h); click(h, 'Add connection');
   assert.equal(field(h, 'Name').value, 'B', 'form draft is not silently replaced on context renders or reopening');
-  await round(h, server, 'Disable provider');
+  openProvider(h, 'A'); await round(h, server, 'Disconnect');
   const next = home(server).controls.providers; assert.equal(next.find(v => v.id === a.id).enabled, false); assert.equal(next.find(v => v.id === b.id).enabled, true);
-  assert.equal(next.find(v => v.id === b.id).selected, b.selected);
+  assert.equal(next.find(v => v.id === a.id).selected, a.selected); assert.equal(next.find(v => v.id === b.id).selected, b.selected);
 });
 
-test('Home outage preserves stale catalog, reports unknown action outcome and recovers only through explicit status without replay', async () => {
+test('Home outage preserves stale catalog, reports unknown action outcome and recovers only through a same-scope status read without replay', async () => {
   const parent = temp(), p = prepareProviderHome(join(parent, 'scope')); let down = false;
   const live = requestFixture(), outage = requestFixture({ status: 503 });
   const server = ready(providerControls(p.bindingPath, { request: (...args) => (down ? outage : live).request(...args) }));
   const h = harness(); h.deliver(hostReply(handshakeId(h), { hostCapabilities: { serverTools: {} } })); h.deliver(toolResult(home(server)));
-  input(h, 'Name', 'A'); input(h, 'Base URL', endpointA); await round(h, server, 'Connect'); await round(h, server, 'Discover models');
-  const kept = home(server).controls.providers[0].models;
-  down = true; await round(h, server, 'Refresh catalog');
-  assert.deepEqual(buttons(h).map(b => b.textContent), ['Read current state']);
+  input(h, 'Name', 'A'); input(h, 'Base URL', endpointA); await round(h, server, 'Connect'); openProvider(h, 'A'); await round(h, server, 'Discover models');
+  const kept = home(server).controls.providers.at(-1).models;
+  down = true; const refresh = await round(h, server, 'Refresh catalog'), calls = h.sent('tools/call').length;
+  assert.deepEqual(buttons(h).map(b => b.textContent), ['Retry state update']); assert.match(h.text('controls'), /The catalog request failed\..*Its current state is unknown/);
+  // v11 reads status automatically once uncertain (home-dashboard covers it); the refresh itself is never retried.
   assert.equal(outage.calls.length, 1); h.advance(60000); assert.equal(outage.calls.length, 1, 'no automatic retry');
-  await round(h, server, 'Read current state');
-  assert.match(h.text('controls'), /Catalog: stale/); assert.equal(buttons(h).find(b => b.textContent === 'Use selected model').disabled, true);
-  assert.deepEqual(home(server).controls.providers[0].models, kept);
+  const status = h.sent('tools/call').at(-1); assert.equal(status.params.name, 'bridge_provider_status'); assert.deepEqual(status.params.arguments, p.scope);
+  assert.ok(h.sent('tools/call').slice(calls).every(m => m.params.name === 'bridge_provider_status')); assert.equal(h.sent('tools/call').filter(m => m.id === refresh.id).length, 1);
+  h.deliver(await server(status));
+  assert.match(h.text('controls'), /Catalog: stale/); assert.ok(defaults(h).length && defaults(h).every(e => e.disabled), 'a stale catalog offers no default choice');
+  assert.deepEqual(home(server).controls.providers.at(-1).models, kept);
   down = false; await round(h, server, 'Refresh catalog');
-  assert.equal(buttons(h).find(b => b.textContent === 'Use selected model').disabled, false);
+  assert.ok(defaults(h).length && defaults(h).every(e => !e.disabled));
 });
 
 test('generic provider CLI operates only on explicit task state and shares Home selection/enable persistence', async () => {

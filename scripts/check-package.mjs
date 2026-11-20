@@ -32,7 +32,7 @@ assert.equal(plugin.extensions['com.openai'].onboardingSkill, './skills/setup');
 assert.equal(legacy.skills, './skills/'); assert.equal(legacy.extensions['com.openai'].onboardingSkill, './skills/setup/SKILL.md');
 const server = readFileSync(serverPath, 'utf8');
 assert.ok(!/^import .* from '(?!node:)/m.test(server), 'the Home server imports only Node built-ins');
-for (const declared of ["'ui://codex-claude/home-v7.html'", "name: 'bridge_home'", "'text/html;profile=mcp-app'", "'ui/initialize'", "'ui/notifications/initialized'", "'openai/ui'", "type: 'global'", "type: 'thread'"])
+for (const declared of ["'ui://codex-claude/home-v11.html'", "name: 'bridge_home'", "'text/html;profile=mcp-app'", "'ui/initialize'", "'ui/notifications/initialized'", "'openai/ui'", "type: 'global'", "type: 'thread'"])
   assert.ok(server.includes(declared), `the Home server declares ${declared}`);
 for (const file of [`${pluginRoot}/plugin.json`, `${pluginRoot}/.codex-plugin/plugin.json`, `${pluginRoot}/mcp.json`, serverPath,
   `${pluginRoot}/skills/setup/SKILL.md`, `${pluginRoot}/skills/diagnose/SKILL.md`, `${pluginRoot}/install.command`, `${pluginRoot}/stage-runtime.sh`])

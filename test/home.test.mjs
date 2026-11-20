@@ -639,7 +639,7 @@ test('the shipped markup is a static, concise shell: one inline script, a closed
   assert.doesNotMatch(html, /authenticated|logged in|signed in|detected|connected to/i, 'no detection or login claim is made by the static page');
   assert.doesNotMatch(html, /@font-face|@import|url\(/, 'no remote or bundled font or asset');
   // The technical protocol detail is collapsed by default; the summary view is the page itself.
-  assert.match(html, /<details id="technical" class="technical"><summary>Connection details &amp; diagnostics<\/summary>/);
+  assert.match(html, /<details id="technical" class="technical"><summary>Diagnostics<\/summary>/);
   assert.doesNotMatch(html, /<details[^>]* open/);
 });
 

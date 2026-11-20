@@ -12,6 +12,9 @@ import { fixture } from './support/fixture.mjs';
 // RV2 the Claude path, RV2b the steering call site (a queued message started into a running turn); RV3 and RV3n
 // are the controls (the same disable and re-enable once the start has finished, which was always handled).
 // Written from the review's description. Fixture seams only: no Claude executable, model, network, FIFO or profile.
+// RC13: a runtime switch is a hand-off to a NEW private physical thread, and a chat with a pending queue is not switched (handoff_queue_pending),
+// so a Claude-owned queue can no longer be moved to GPT through the router. The GPT cases assert that refusal, then keep the review's scenario on a
+// record moved in place before RC13 (`inPlace`, the Bridge's own un-routed model change), whose GPT queue Bridge still runs.
 const text = x => [{ type: 'text', text: x }];
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const ticks = (ms = 80) => new Promise(r => setTimeout(r, ms));
@@ -19,6 +22,15 @@ const q = (f, id, m, p = {}) => f.bridge.request(`thread/queue/${m}`, { threadId
 const ids = (f, id) => f.bridge.records.get(id).queue.map(x => x.clientUserMessageId);
 const cycle = root => { setEnabled(root, false); setEnabled(root, true); }; // a disable nobody was told about
 const gptOnly = f => id => f.bridge.request('thread/settings/update', { threadId: id, model: 'gpt-test', effort: 'low' });
+const inPlace = f => id => f.bridge.request('thread/settings/update', { threadId: id, model: 'gpt-test', effort: 'low' }, { localRouted: true });
+async function refused(f, id, request) { // refused whole: the saved chat, its queue, stamp and marker unchanged; nothing native created, started or queued; no link, no query
+  const file = join(f.statePath, `${id}.json`), bytes = readFileSync(file), queue = JSON.stringify(f.bridge.records.get(id).queue), n = f.calls.length, k = f.queries.length;
+  await assert.rejects(request, { code: 'handoff_queue_pending' });
+  assert.ok(readFileSync(file).equals(bytes), 'the saved chat is byte-identical'); assert.equal(JSON.stringify(f.bridge.records.get(id).queue), queue, 'same queue IDs and content');
+  assert.deepEqual(f.calls.slice(n).filter(c => ['thread/start', 'turn/start', 'thread/queue/add', 'thread/inject_items'].includes(c.method)), [], 'nothing created, started or queued natively');
+  assert.equal(f.bridge.localResponses.readLink(id), null, 'no link'); assert.equal(f.bridge.records.get(id).provider, 'claude'); assert.equal(f.queries.length, k, 'no Claude query');
+}
+const toGpt = async (f, id) => { await refused(f, id, gptOnly(f)(id)); await refused(f, id, f.send(id, 'gpt', { model: 'gpt-test' })); await inPlace(f)(id); assert.equal(f.bridge.records.get(id).provider, 'native'); };
 const ack = () => async function* (a) {
   for await (const m of a.steeringInput) { yield { ...m, isReplay: true }; yield { type: 'result', subtype: 'success', user_message_uuids: [a.promptId, m.uuid] }; break; }
 };
@@ -37,9 +49,9 @@ function onQueueChange(f, action) {
   return () => { armed = true; };
 }
 
-test('RV1 a chat moved to GPT: a disable and re-enable during the automatic native start of A keeps B from draining on GPT', async () => {
+test('RV1 a queued chat\'s GPT hand-off is refused intact; on a chat moved in place before RC13, a disable and re-enable during the automatic native start of A keeps B from draining on GPT', async () => {
   const { root, f } = setup(); try {
-    const id = await idleQueue(f); await gptOnly(f)(id); let starts = 0;
+    const id = await idleQueue(f); await toGpt(f, id); let starts = 0;
     // The second native turn/start is the automatic start of A (the first is the ordinary GPT message); the
     // change lands at the start of that RPC, after the last admission check and before its response.
     f.controls.native = async method => { if (method === 'turn/start' && ++starts === 2) cycle(root); };
@@ -91,10 +103,10 @@ test('RV3 control: the same disable and re-enable while A is running (the start 
   } finally { gate.resolve(); clean(root, f); }
 });
 
-test('RV3n control, native path: the same change while A runs on GPT pauses B; with no change the queue continues as before', async () => {
+test('RV3n control, native path (refused hand-off, then a chat moved in place before RC13): the same change while A runs on GPT pauses B; with no change the queue continues as before', async () => {
   for (const change of [true, false]) {
     const { root, f } = setup(), hold = deferred(); try {
-      const id = await idleQueue(f); await gptOnly(f)(id); let nativeTurns = 0;
+      const id = await idleQueue(f); await toGpt(f, id); let nativeTurns = 0;
       f.controls.nativeTurn = () => (++nativeTurns === 2 ? hold.promise : undefined); // the second native turn is A
       const s = await f.send(id, 'ordinary gpt'); await f.done(s.turn.id);
       for (let i = 0; i < 100 && nativeTurns < 2; i++) await ticks(5);
@@ -115,9 +127,9 @@ test('RV3n control, native path: the same change while A runs on GPT pauses B; w
 const legacyBytes = () => { const store = defaultStore(); delete store.connections.claude_code.disableGeneration; delete store.connections.claude_code.storeId; return Buffer.from(JSON.stringify(store)); };
 const writeStore = (root, bytes) => { writeFileSync(join(root, storeFile), bytes, { mode: 0o600 }); chmodSync(join(root, storeFile), 0o600); };
 
-for (const [name, unreadable] of [['P1', true], ['P1c control', false]]) test(`${name}: a Claude-owned queue moved to GPT and explicitly started${unreadable ? ' while the store is unreadable' : ' with a readable store'} still holds B after a disable and re-enable while A runs`, async () => {
+for (const [name, unreadable] of [['P1', true], ['P1c control', false]]) test(`${name}: a Claude-owned queue (its GPT hand-off refused intact) moved in place before RC13 and explicitly started${unreadable ? ' while the store is unreadable' : ' with a readable store'} still holds B after a disable and re-enable while A runs`, async () => {
   const logs = [], { root, f } = setup(logs), hold = deferred(); try {
-    const id = await idleQueue(f); await gptOnly(f)(id); const good = readFileSync(join(root, storeFile));
+    const id = await idleQueue(f); await toGpt(f, id); const good = readFileSync(join(root, storeFile));
     if (unreadable) writeStore(root, '{broken');
     f.controls.nativeTurn = () => hold.promise; // A runs on GPT until released
     const sub = f.bridge.records.get(id).queue[0]; const started = await q(f, id, 'start', { queuedSubmissionId: sub.id });
@@ -132,10 +144,10 @@ for (const [name, unreadable] of [['P1', true], ['P1c control', false]]) test(`$
   } finally { hold.resolve(); clean(root, f); }
 });
 
-test('P4: on an earlier-layout store, a Claude-owned queue moved to GPT is not started by an ordinary GPT message', async () => {
+test('P4: on an earlier-layout store, a Claude-owned queue is not handed off to GPT (refused intact) and, moved in place before RC13, is not started by an ordinary GPT message', async () => {
   const root = mkdtempSync(join(tmpdir(), 'bridge-r3-')), logs = []; writeStore(root, legacyBytes());
   const f = fixture('openai', { connectionRoot: root, log: (event, meta) => { logs.push({ event, ...meta }); } }); try {
-    const id = await idleQueue(f); await gptOnly(f)(id); const n = f.queries.length;
+    const id = await idleQueue(f); await toGpt(f, id); const n = f.queries.length;
     assert.equal(f.bridge.records.get(id).provider, 'native');
     const s = await f.send(id, 'ordinary gpt'); await f.done(s.turn.id); await ticks(250);
     const record = f.bridge.records.get(id);
@@ -146,10 +158,10 @@ test('P4: on an earlier-layout store, a Claude-owned queue moved to GPT is not s
   } finally { clean(root, f); }
 });
 
-test('P5 the never-matching stamp and odd saved stamps are held on both providers and cannot be forged into a match', async () => {
+test('P5 the never-matching stamp and odd saved stamps are held on both providers (GPT: its hand-off refused, then moved in place before RC13) and cannot be forged into a match', async () => {
   for (const provider of ['claude', 'native']) for (const stamp of ['unknown', null, 7, '', 'none', 'x:1']) {
     const { root, f } = setup(); try {
-      const id = await idleQueue(f); if (provider === 'native') await gptOnly(f)(id);
+      const id = await idleQueue(f); if (provider === 'native') await toGpt(f, id);
       const path = join(f.statePath, `${id}.json`), saved = JSON.parse(readFileSync(path, 'utf8'));
       saved.queueGeneration = stamp; delete saved.queuePaused; writeFileSync(path, JSON.stringify(saved), { mode: 0o600 }); f.restart();
       const record = f.bridge.records.get(id);

@@ -75,7 +75,7 @@ try {
     assert.deepEqual(tools.map(tool => tool.name), ['bridge_home']);
     assert.equal(tools[0].annotations?.readOnlyHint, true);
     const uri = tools[0]._meta?.ui?.resourceUri;
-    assert.equal(uri, 'ui://codex-claude/home-v7.html');
+    assert.equal(uri, 'ui://codex-claude/home-v11.html');
     assert.deepEqual(tools[0]._meta?.['openai/ui'], { entrypoints: [{ type: 'global' }, { type: 'thread' }] }, 'Home declares its global and thread entrypoints');
     assert.ok((await client.listResources()).resources.some(r => r.uri === uri && r.mimeType === 'text/html;profile=mcp-app'));
     const called = await client.callTool({ name: 'bridge_home', arguments: {} });
