@@ -1,10 +1,10 @@
-<p align="center"><img src="https://raw.githubusercontent.com/gustavonline/codex-claude-bridge/main/.github/assets/banner.png" alt="Codex Bridge — One workspace. More models." width="1200"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/gustavonline/codex-model-bridge/main/.github/assets/banner.png" alt="Codex Model Bridge — One workspace. More models." width="1200"></p>
 
-# Codex Bridge
+# Codex Model Bridge
 
 **Use Codex as your main workspace, with more choice of models.**
 
-Keep your conversations, files, browser and tools in one place. Codex Bridge adds Claude alongside the native models in the Codex desktop app, using your installed Claude Code runtime and the official Agent SDK. Switch models within the same visible conversation, whether you are researching, writing, planning or building software.
+Keep your conversations, files, browser and tools in one place. Codex Model Bridge adds Claude alongside the native models in the Codex desktop app, using your installed Claude Code runtime and the official Agent SDK. Switch models within the same visible conversation, whether you are researching, writing, planning or building software.
 
 By [Gustav Online](https://github.com/gustavonline).
 
@@ -20,8 +20,8 @@ An independent **macOS source preview**. It is not an OpenAI or Anthropic produc
 Packaged releases are still private drafts. There is no public installer release yet. Developers can inspect the source and build a local bundle:
 
 ```sh
-git clone https://github.com/gustavonline/codex-claude-bridge.git
-cd codex-claude-bridge
+git clone https://github.com/gustavonline/codex-model-bridge.git
+cd codex-model-bridge
 npm ci --ignore-scripts --omit=optional
 npm run check
 npm run bundle -- --pin
