@@ -41,16 +41,24 @@ export function providerControls(path, { request, secrets, authOptions = {} } = 
       guard(); if (snapshot().revision !== authRevision) fail('stale_revision');
       return registry.create({ name: 'OpenRouter', baseUrl: openRouterBase, authRef: reference, freeOnly: true });
     } });
+  // Antigravity as a connected provider once it is turned on (or its models are in the library): its account's models, available only while
+  // it is on and its catalog is current. Turning it off keeps the saved selection, shown as unavailable.
+  const agyProvider = () => {
+    const on = readHarnessSettings(state).antigravity?.enabled === true, models = registry.pickerCatalog().models.filter(m => m.kind === 'antigravity');
+    if (!on && !models.length) return [];
+    return [{ id: '00000000000000000000000000000003', kind: 'antigravity', name: 'Gemini (Antigravity)', baseUrl: '', protocol: 'antigravity', authRef: null, selected: null, enabled: on,
+      catalogState: !models.length ? 'unknown' : models.every(m => m.available) ? 'fresh' : 'stale', models: models.map(m => ({ ...m, available: m.available && on })) }];
+  };
   const snapshot = (focusedProvider = null) => {
     guard(); const all = registry.all(), slots = registry.slots(), catalog = registry.pickerCatalog(), claude = claudeDecision(state), claudeStore = readConnections(state), refresh = registry.pickerRefresh(), reserved = new Set(registry.reservedPickerModels());
     const revision = all.reduce((n, p) => n + p.revision + 1, slots.revision + catalog.revision + refresh.revision + readHarnessSettings(state).revision + (claudeStore.status === 'ok' ? claudeStore.store.revision : 0));
     if (!Number.isSafeInteger(revision)) fail('revision_exhausted');
     return { kind: 'responses-trial', ...scope, revision, focusedProvider, slots: { revision: slots.revision, models: slots.models, scope: slots.version === 2 ? 'all' : 'custom', catalogRevision: catalog.revision },
-      pickerRefresh: { requested: refresh.revision, observed: catalog.requestRevision ?? 0, kind: refresh.kind }, auth: auth.status(), authReferences: registry.broker.references(), harnesses: harnessStatuses({ root: state }), providers: [...['native', 'claude'].map((kind, i) => ({ id: (i + 1).toString(16).padStart(32, '0'), kind,
+      pickerRefresh: { requested: refresh.revision, observed: catalog.requestRevision ?? 0, kind: refresh.kind }, auth: auth.status(), authReferences: registry.broker.references(), harnesses: harnessStatuses({ root: state }).filter(h => !(h.id === 'antigravity' && h.enabled)), providers: [...['native', 'claude'].map((kind, i) => ({ id: (i + 1).toString(16).padStart(32, '0'), kind,
         name: kind === 'native' ? 'Codex / GPT' : 'Claude Code', baseUrl: '', protocol: kind, authRef: null, selected: null,
         enabled: kind === 'native' || claude.policy.enabled,
         catalogState: catalog.nativeFailed === true ? 'stale' : !catalog.revision ? 'unknown' : catalog.models.some(m => m.kind === kind && !m.available) ? 'stale' : 'fresh',
-        models: catalog.models.filter(m => m.kind === kind).map(m => ({ ...m, available: m.available && (kind === 'native' || claude.policy.enabled) })) })), ...all.map(s => ({ id: s.connectionId, name: s.name, baseUrl: s.baseUrl,
+        models: catalog.models.filter(m => m.kind === kind).map(m => ({ ...m, available: m.available && (kind === 'native' || claude.policy.enabled) })) })), ...agyProvider(), ...all.map(s => ({ id: s.connectionId, name: s.name, baseUrl: s.baseUrl,
         protocol: s.protocol, authRef: s.authRef, freeOnly: freeOnly(s), catalogError: s.catalog?.error ?? null, enabled: s.enabled, selected: s.selected, catalogState: s.catalog?.status ?? 'unknown',
         models: (s.catalog?.models ?? []).map(model => ({ id: localModelId(s.connectionId, model), name: model, capabilities: modelReasoning(s, model), available: !reserved.has(localModelId(s.connectionId, model)) && (!freeOnly(s) || s.catalog?.details?.some(m => m.id === model && m.free === true)) })) }))] };
   };

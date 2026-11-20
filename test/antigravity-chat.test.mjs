@@ -82,3 +82,32 @@ test('the shared mailbox works from an Antigravity child exactly as from a Claud
     assert.deepEqual((await call(parent, 'p1', 'mailbox', { operation: 'inbox' })).data.map(m => [m.kind, m.text]), [['question', 'Which file?']]);
   } finally { hold.resolve({ stopReason: 'end_turn' }); await new Promise(r => setTimeout(r, 50)); f.close(); }
 });
+
+test('Gemini models join the same library and saved slots: a saved one is offered, an unselected one stays hidden, and a cold catalog keeps the selection as unavailable', async () => {
+  const { mkdtempSync } = await import('node:fs'), { tmpdir } = await import('node:os'), { join } = await import('node:path');
+  const { prepareProviderHome, providerControls } = await import('../plugins/codex-claude/home/provider-controls.mjs');
+  const { ProviderRegistry } = await import('../plugins/codex-claude/home/providers.mjs');
+  const p = prepareProviderHome(join(mkdtempSync(join(tmpdir(), 'bridge-agy-slots-')), 'scope')), registry = new ProviderRegistry(p.state);
+  const OTHER = harnessModelId('antigravity', 'google', 'gemini-y'), ready = { models: [{ id: MODEL, model: 'gemini-x', name: 'Gemini X' }, { id: OTHER, model: 'gemini-y', name: 'Gemini Y' }], levels: ['low', 'high'] };
+  const f = fixture('openai', { connectionRoot: p.state }); f.bridge.agyCatalogReady = ready;
+  try {
+    await f.bridge.request('model/list', {});
+    const catalog = registry.pickerCatalog(), agy = catalog.models.filter(m => m.kind === 'antigravity');
+    assert.deepEqual(agy.map(m => [m.id, m.available, m.defaultVisible]), [[MODEL, true, false], [OTHER, true, false]], 'in the library, available, never shown by default');
+    registry.savePickerSlots(['gpt-test', MODEL], registry.slots().revision, catalog.revision);
+    let ids = (await f.bridge.request('model/list', {})).data.map(m => m.id);
+    assert.ok(ids.includes(MODEL) && !ids.includes(OTHER), 'the saved Gemini model is offered, the unselected one is hidden');
+    f.restart(); f.bridge.agyCatalogReady = ready;
+    ids = (await f.bridge.request('model/list', {})).data.map(m => m.id); assert.ok(ids.includes(MODEL) && !ids.includes(OTHER), 'and after a restart');
+    f.restart(); f.bridge.agyCatalogReady = null; f.bridge.antigravityRuntime = () => null; // cold: not loaded (or turned off)
+    ids = (await f.bridge.request('model/list', {})).data.map(m => m.id); assert.ok(!ids.includes(MODEL), 'not offered while it cannot run');
+    assert.deepEqual(registry.pickerCatalog().models.filter(m => m.kind === 'antigravity').map(m => [m.id, m.available]), [[MODEL, false], [OTHER, false]], 'kept in the library as unavailable');
+    assert.deepEqual(registry.slots().models, ['gpt-test', MODEL], 'the saved selection is never rewritten');
+    // Home shows it as a connected provider while it is on, its models unavailable while the catalog is cold.
+    const { setHarnessEnabled } = await import('../plugins/codex-claude/home/harnesses.mjs');
+    const card = () => providerControls(p.bindingPath).snapshot().providers.find(x => x.kind === 'antigravity');
+    assert.deepEqual([card().enabled, card().catalogState, card().models.every(m => m.available === false)], [false, 'stale', true]);
+    setHarnessEnabled(p.state, 'antigravity', true, { platform: 'linux', find: () => process.execPath });
+    assert.equal(card().enabled, true); assert.ok(!providerControls(p.bindingPath).snapshot().harnesses.some(h => h.id === 'antigravity'), 'no second row while it is a connected card');
+  } finally { f.close(); }
+});

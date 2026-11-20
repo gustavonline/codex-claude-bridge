@@ -33,9 +33,14 @@ An Antigravity route executes only where Antigravity is qualified and turned on:
 
 ## Turning a harness on
 
-In the connection-manager Home, the Gemini (Antigravity) row offers **Turn on** where its boundary is supported (Linux) and `agy` is found. The choice and the resolved runtime path are stored in Bridge's own connection store (`harnesses.json`). Bridge then offers the account's models in the model list for new chats and runs them. **Turn off** stops new chats; existing chats keep their history.
+In the connection-manager Home, the Gemini (Antigravity) row in **Connect more** offers **Turn on** where its boundary is supported and `agy` is found. The choice and the resolved runtime path are stored in Bridge's own connection store (`harnesses.json`).
 
-Sign-in is agy's own flow: run `agy` once and sign in with Google. Bridge never sees the password and never copies a profile. `BRIDGE_AGY` exists for development only.
+Once it is on, Gemini appears as a connected provider, like Claude:
+- Its account's models enter the same model library and slots as every other model. They are never shown by default: add them to the picker like any other model, and an unselected one stays hidden in the native model list.
+- While it is off, or its catalog is not loaded, a saved selection stays in the library as unavailable, is not offered, and is never rewritten.
+- **Turn off** stops new chats; existing chats keep their history.
+
+**Remaining onboarding gap:** Home does not run agy's Google sign-in. Sign in once with `agy` itself (Google's own browser flow); Bridge never sees the password or copies a profile. Until Home exposes that flow, onboarding is not the complete dashboard experience. `BRIDGE_AGY` exists for development only.
 
 ## Child chats and the mailbox
 

@@ -1206,11 +1206,18 @@ export class Bridge {
         offeredClaude = merged.offered;
         if (!this.localResponses && this.connectionRoot) try { recordOffered(this.connectionRoot, offeredClaude, { wait: false }); } catch (error) { this.log('connections.record_failed', errorMetadata(error)); }
       } catch (error) { claudeCatalogFailed = true; this.log('models.failed', errorMetadata(error)); }
+      // Qualified Antigravity models, as the signed-in account reports them, under their explicit harness routes ("new chats" only: an existing
+      // chat keeps its runtime). They join the same library and slots as every other model. Never blocking: a cold catalog is loaded in the
+      // background and offered from the next list on; until then a saved selection is retained as unavailable, never dropped or invented.
+      const agyIds = new Set();
+      if (this.agyCatalogReady) for (const m of this.agyCatalogReady.models) if (!list.some(x => x.id === m.id)) { list.push(antigravityRow(m, this.agyCatalogReady.levels)); agyIds.add(m.id); }
+      if (!this.agyCatalogReady && !this.agyCatalogWarm && this.antigravityRuntime()) { this.agyCatalogWarm = true; this.antigravityCatalog().then(c => { this.agyCatalogReady = c.models.length ? c : null; this.agyCatalogWarm = false; }); }
       if (this.localResponses) {
         const retained = claudeCatalogFailed ? this.localResponses.registry.pickerCatalog().models.filter(m => m.kind === 'claude' && !nativeIds.has(m.id)).map(m => ({ ...m, available: false })) : [];
+        const retainedAgy = this.agyCatalogReady ? [] : this.localResponses.registry.pickerCatalog().models.filter(m => m.kind === 'antigravity').map(m => ({ ...m, available: false }));
         this.localResponses.registry.observePickerModels([...list.map(m => ({ id: m.id, name: m.displayName ?? m.model ?? m.id,
-          kind: nativeIds.has(m.id) ? 'native' : 'claude', defaultVisible: m.hidden !== true, available: nativeIds.has(m.id) || claudeAvailable,
-          capabilities: Object.fromEntries(['supportedReasoningEfforts', 'defaultReasoningEffort', 'inputModalities', 'supportsPersonality'].filter(k => m[k] !== undefined).map(k => [k, m[k]])) })), ...retained], pickerRefresh.revision);
+          kind: nativeIds.has(m.id) ? 'native' : agyIds.has(m.id) ? 'antigravity' : 'claude', defaultVisible: agyIds.has(m.id) ? false : m.hidden !== true, available: nativeIds.has(m.id) || agyIds.has(m.id) || claudeAvailable,
+          capabilities: Object.fromEntries(['supportedReasoningEfforts', 'defaultReasoningEffort', 'inputModalities', 'supportsPersonality'].filter(k => m[k] !== undefined).map(k => [k, m[k]])) })), ...retained, ...retainedAgy], pickerRefresh.revision);
       }
       if (this.localResponses) try {
         const merged = this.localResponses.mergeModels(list, params.includeHidden === true);
@@ -1221,10 +1228,6 @@ export class Bridge {
         list = this.localResponses.registry.filterPicker(list, params.includeHidden === true);
         if (this.connectionRoot) try { recordOffered(this.connectionRoot, offeredClaude.filter(id => list.some(m => m.id === id)), { wait: false }); } catch (error) { this.log('connections.record_failed', errorMetadata(error)); }
       }
-      // Qualified Antigravity models, as the signed-in account reports them, under their explicit harness routes ("new chats" only: an existing
-      // chat keeps its runtime). Never blocking: a cold catalog is loaded in the background and offered from the next list on.
-      if (this.agyCatalogReady) for (const m of this.agyCatalogReady.models) if (!list.some(x => x.id === m.id)) list.push(antigravityRow(m, this.agyCatalogReady.levels));
-      else if (!this.agyCatalogWarm && process.platform === 'linux' && this.antigravityRuntime()) { this.agyCatalogWarm = true; this.antigravityCatalog().then(c => { this.agyCatalogReady = c.models.length ? c : null; this.agyCatalogWarm = false; }); }
       const result = this.page(list, params), slots = this.localResponses?.registry.slots();
       this.log('models.listed', { catalogRows: list.length, returnedRows: result.data.length,
         hiddenRows: result.data.filter(m => m.hidden === true).length, selectedRows: slots?.models?.length,

@@ -171,10 +171,10 @@ function parseProviders(value) {
   var seen = [];
   for (var p of value.providers) {
     if (!isObject(p) || !valid(p.id) || seen.indexOf(p.id) >= 0 || typeof p.name !== 'string' || p.name.length > 80 || typeof p.baseUrl !== 'string' || p.baseUrl.length > 2048
-      || ['responses', 'native', 'claude'].indexOf(p.protocol) < 0 || typeof p.enabled !== 'boolean' || ['unknown', 'fresh', 'stale'].indexOf(p.catalogState) < 0
+      || ['responses', 'native', 'claude', 'antigravity'].indexOf(p.protocol) < 0 || typeof p.enabled !== 'boolean' || ['unknown', 'fresh', 'stale'].indexOf(p.catalogState) < 0
       || !(p.selected === null || typeof p.selected === 'string' && p.selected.length <= 800) || !Array.isArray(p.models) || p.models.length > 4096) return null;
-    if (p.protocol !== 'responses' && (p.id !== (p.protocol === 'native' ? '00000000000000000000000000000001' : '00000000000000000000000000000002') || p.kind !== p.protocol || p.baseUrl !== '')) return null;
-    if (p.protocol === 'responses' && (p.id === '00000000000000000000000000000001' || p.id === '00000000000000000000000000000002' || p.models.length > 1024)) return null;
+    if (p.protocol !== 'responses' && (p.id !== ({ native: '00000000000000000000000000000001', claude: '00000000000000000000000000000002', antigravity: '00000000000000000000000000000003' })[p.protocol] || p.kind !== p.protocol || p.baseUrl !== '')) return null;
+    if (p.protocol === 'responses' && (p.id === '00000000000000000000000000000001' || p.id === '00000000000000000000000000000002' || p.id === '00000000000000000000000000000003' || p.models.length > 1024)) return null;
     var models = [];
     for (var m of p.models) {
       if (!isObject(m) || typeof m.id !== 'string' || !m.id || m.id.length > 800 || models.indexOf(m.id) >= 0 || typeof m.name !== 'string' || m.name.length > 512 || !validCapabilities(m.capabilities)) return null;
@@ -444,7 +444,7 @@ function renderProviders(target, c, blocked) {
     var card = node('article', undefined, 'provider-card');
     var choose = button(card, provider.name, function () { providerDraft.providerId = provider.id; providerDraft.detail = true; providerDraft.open = false; providerDraft.model = ''; c.focusedProvider = null; focusAfterRender = 'connections-back'; render(); }, 'provider-' + provider.id);
     choose.className = 'connection-pick'; choose.setAttribute('aria-label', provider.name);
-    var summary = !provider.enabled ? 'Disconnected · settings saved' : provider.protocol === 'native' ? 'Uses your Codex sign-in' : provider.protocol === 'claude' ? 'Runs on this Mac' : provider.freeOnly ? 'Connected · Free-only' : provider.catalogState === 'fresh' ? provider.models.length + (provider.models.length === 1 ? ' model' : ' models') : provider.catalogState === 'stale' ? 'Catalog unavailable · last known models' : 'Models not loaded';
+    var summary = !provider.enabled ? 'Disconnected · settings saved' : provider.protocol === 'native' ? 'Uses your Codex sign-in' : provider.protocol === 'claude' ? 'Runs on this Mac' : provider.protocol === 'antigravity' ? 'Your Antigravity account · in Bridge’s boundary' : provider.freeOnly ? 'Connected · Free-only' : provider.catalogState === 'fresh' ? provider.models.length + (provider.models.length === 1 ? ' model' : ' models') : provider.catalogState === 'stale' ? 'Catalog unavailable · last known models' : 'Models not loaded';
     choose.replaceChildren(glyph(provider), node('span', provider.name), node('small', summary, 'muted')); card.append(node('span', '›', 'row-chevron'));
     (provider.enabled ? connected : more).append(card);
   });
@@ -462,7 +462,7 @@ function renderProviders(target, c, blocked) {
     // Grouped rows, in this order: Models, Default for new chats, Connection.
     var rows = node('section', undefined, 'detail-group'); rows.setAttribute('aria-label', p.name + ' options');
     var modelSettings = node('div', undefined, 'detail-row'), modelText = node('div'); modelText.append(node('h3', 'Models'), node('small', p.models.length + ' models' + (p.catalogState === 'stale' ? ' · Last known models' : p.catalogState === 'unknown' ? ' · Not loaded yet' : ''), 'muted')); modelSettings.append(modelText);
-    button(modelSettings, p.catalogState === 'unknown' ? 'Discover models' : 'Refresh catalog', function () { controlCall('refresh', { providerId: p.id }); }, 'discover', p.protocol !== 'responses' && c.pickerRefresh && c.pickerRefresh.requested > c.pickerRefresh.observed);
+    if (p.protocol !== 'antigravity') button(modelSettings, p.catalogState === 'unknown' ? 'Discover models' : 'Refresh catalog', function () { controlCall('refresh', { providerId: p.id }); }, 'discover', p.protocol !== 'responses' && c.pickerRefresh && c.pickerRefresh.requested > c.pickerRefresh.observed);
     rows.append(modelSettings);
     if (p.protocol === 'responses' && p.models.length) {
       // The whole row is the target; the chevron is plain. It opens the default-model menu beside the row.
@@ -480,7 +480,8 @@ function renderProviders(target, c, blocked) {
     }
     if (p.protocol !== 'native') {
       var admission = node('div', undefined, 'detail-row'), admissionText = node('div'); admissionText.append(node('h3', 'Connection'), node('small', 'Stops new chats from using ' + p.name + '. Keeps your sign-in and chat history.', 'muted')); admission.append(admissionText);
-      button(admission, p.enabled ? (p.protocol === 'claude' ? 'Disable Claude' : 'Disconnect') : (p.protocol === 'claude' ? 'Enable Claude' : 'Reconnect'), function () { controlCall('enabled', { providerId: p.id, enabled: !p.enabled }); }, 'provider-enabled');
+      if (p.protocol === 'antigravity') button(admission, p.enabled ? 'Turn off Gemini' : 'Turn on Gemini', function () { controlCall('harness', { harness: 'antigravity', enabled: !p.enabled }); }, 'provider-enabled');
+      else button(admission, p.enabled ? (p.protocol === 'claude' ? 'Disable Claude' : 'Disconnect') : (p.protocol === 'claude' ? 'Enable Claude' : 'Reconnect'), function () { controlCall('enabled', { providerId: p.id, enabled: !p.enabled }); }, 'provider-enabled');
       rows.append(admission);
     }
     providerOptions.append(rows);
@@ -489,6 +490,7 @@ function renderProviders(target, c, blocked) {
     // The boundary line stays until the new hand-off is qualified; Technical details come last.
     if (p.protocol === 'responses') providerOptions.append(node('p', 'Chats started with ' + p.name + ' can switch between ' + p.name + ' models. To use another connection, start a new chat.', 'muted boundary'));
     if (p.protocol === 'claude') providerOptions.append(node('p', 'A chat switched to Claude keeps its messages and tool results, but not earlier hidden reasoning.', 'muted boundary'));
+    if (p.protocol === 'antigravity') providerOptions.append(node('p', 'Sign-in stays with agy: run it once and sign in with Google. Its models are for new chats; a chat keeps its model.', 'muted boundary'));
     providerOptions.append(technical);
     connections.append(providerOptions);
   }

@@ -173,7 +173,7 @@ function validatePickerCatalog(value) {
     || Buffer.byteLength(JSON.stringify(value)) > maxSlotBytes) fail('catalog_invalid');
   for (const m of value.models) {
     pickerId(m.id);
-    if (!keys(m, ['id', 'name', 'kind', 'defaultVisible', 'available', 'capabilities']) || !['native', 'claude'].includes(m.kind)
+    if (!keys(m, ['id', 'name', 'kind', 'defaultVisible', 'available', 'capabilities']) || !['native', 'claude', 'antigravity'].includes(m.kind)
       || typeof m.name !== 'string' || m.name.length > 512 || typeof m.defaultVisible !== 'boolean' || typeof m.available !== 'boolean'
       || !object(m.capabilities) || JSON.stringify(m.capabilities).length > 8192) fail('catalog_invalid');
   }
