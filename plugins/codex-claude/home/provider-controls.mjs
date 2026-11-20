@@ -7,6 +7,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdirSync, lstatSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { ProviderRegistry, rootOk, readPrivate, localModelId, freeOnly, modelReasoning } from './providers.mjs';
+import { harnessStatuses } from './harnesses.mjs';
 const identity = p => { const s = lstatSync(p); return [s.dev, s.ino, s.uid, s.mode & 0o777].join(':'); };
 const fail = code => { throw Object.assign(new Error(code), { code }); };
 const id = x => typeof x === 'string' && /^[a-f0-9]{32}$/.test(x);
@@ -45,7 +46,7 @@ export function providerControls(path, { request, secrets, authOptions = {} } = 
     const revision = all.reduce((n, p) => n + p.revision + 1, slots.revision + catalog.revision + refresh.revision + (claudeStore.status === 'ok' ? claudeStore.store.revision : 0));
     if (!Number.isSafeInteger(revision)) fail('revision_exhausted');
     return { kind: 'responses-trial', ...scope, revision, focusedProvider, slots: { revision: slots.revision, models: slots.models, scope: slots.version === 2 ? 'all' : 'custom', catalogRevision: catalog.revision },
-      pickerRefresh: { requested: refresh.revision, observed: catalog.requestRevision ?? 0, kind: refresh.kind }, auth: auth.status(), authReferences: registry.broker.references(), providers: [...['native', 'claude'].map((kind, i) => ({ id: (i + 1).toString(16).padStart(32, '0'), kind,
+      pickerRefresh: { requested: refresh.revision, observed: catalog.requestRevision ?? 0, kind: refresh.kind }, auth: auth.status(), authReferences: registry.broker.references(), harnesses: harnessStatuses(), providers: [...['native', 'claude'].map((kind, i) => ({ id: (i + 1).toString(16).padStart(32, '0'), kind,
         name: kind === 'native' ? 'Codex / GPT' : 'Claude Code', baseUrl: '', protocol: kind, authRef: null, selected: null,
         enabled: kind === 'native' || claude.policy.enabled,
         catalogState: catalog.nativeFailed === true ? 'stale' : !catalog.revision ? 'unknown' : catalog.models.some(m => m.kind === kind && !m.available) ? 'stale' : 'fresh',

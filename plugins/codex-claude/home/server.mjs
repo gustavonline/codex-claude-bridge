@@ -183,6 +183,11 @@ function parseProviders(value) {
     seen.push(p.id);
   }
   for (var ref of value.authReferences) if (!isObject(ref) || typeof ref.id !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(ref.id) || typeof ref.baseUrl !== 'string' || ref.baseUrl.length > 2048) return null;
+  // Other harnesses are status facts only (never a model, never an action): bounded strings and closed state values.
+  if (value.harnesses !== undefined && (!Array.isArray(value.harnesses) || value.harnesses.length > 16 || value.harnesses.some(function (h) {
+    return !isObject(h) || !/^[a-z][a-z0-9-]{1,31}$/.test(h.id) || typeof h.label !== 'string' || h.label.length > 60 || typeof h.reason !== 'string' || h.reason.length > 300
+      || ['found', 'not_found', 'not_applicable'].indexOf(h.runtime) < 0 || h.execution !== 'not_qualified' || !(h.executable === undefined || /^[A-Za-z0-9_.-]{1,40}$/.test(h.executable));
+  }))) return null;
   if (value.slots.scope !== undefined && (['all', 'custom'].indexOf(value.slots.scope) < 0 || !Number.isSafeInteger(value.slots.catalogRevision) || value.slots.catalogRevision < 0)) return null;
   if (value.auth !== undefined && (!isObject(value.auth) || ['idle', 'starting', 'waiting', 'exchanging', 'complete', 'failed', 'expired', 'cancelled'].indexOf(value.auth.phase) < 0 || typeof value.auth.storageAvailable !== 'boolean' || !(value.auth.authorizationUrl === null || validAuthUrl(value.auth.authorizationUrl)))) return null;
   return value;
@@ -405,6 +410,13 @@ function renderProviders(target, c, blocked) {
     if (!connectedRouter && c.auth.error && phase === 'failed') signIn.append(node('p', readableError(c.auth.error), 'alert'));
     if (!connectedRouter) more.append(signIn);
   }
+  // Every other harness, as it really is here: whether its runtime was found (never run), and why it does not run in Bridge. No button: nothing to start.
+  if (!providerDraft.detail && !providerDraft.open) (c.harnesses || []).forEach(function (h) {
+    var row = node('article', undefined, 'provider-card harness-row'), info = node('div');
+    var line = (h.runtime === 'found' ? h.executable + ' found' : h.runtime === 'not_found' ? 'Needs ' + h.executable : 'Separate runtime') + ' · Not available in Bridge yet';
+    var why = node('details'); why.append(node('summary', 'Why'), node('p', h.reason, 'muted'));
+    info.append(node('h3', h.label), node('small', line, 'muted'), why); row.append(info); more.append(row);
+  });
   if (providerDraft.open) {
     var form = node('section', undefined, 'connection-form'); form.setAttribute('aria-label', 'New connection'); form.append(node('h3', 'Add a provider'));
     var name = field(form, 'Name', 'name', 80), url = field(form, 'Base URL', 'baseUrl', 2048);
