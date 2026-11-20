@@ -24,7 +24,7 @@ import { sessionCall, sessionNamespace, withSessionTools } from './sessions.mjs'
 import { messageStream, submission, steerTurn, steeringResult, settleSteering } from './steering.mjs';
 import { claudeDecision, claudeDenial, mergeClaudeModels, normalizeModels, recordCatalog, recordOffered, storedModels } from './connections.mjs';
 import { ResponsesRouter } from './plugins/codex-claude/home/providers.mjs';
-import { harnessRefusal, parseHarnessModelId } from './plugins/codex-claude/home/harnesses.mjs';
+import { harnessRefusal, isHarnessModel, parseHarnessModelId } from './plugins/codex-claude/home/harnesses.mjs';
 import { readAllTurns } from './continuity.mjs';
 import { runtimeHandoff } from './runtime-handoff.mjs';
 import { overlayHistory, pageTurns, pageItems } from './custom-turns.mjs';
@@ -1140,8 +1140,8 @@ export class Bridge {
   async request(method, params = {}, internal = {}) {
     // A route to a harness that does not execute here is refused before any router, host or SDK sees it (see harnesses.mjs).
     if (['thread/start', 'thread/resume', 'thread/fork', 'thread/settings/update', 'turn/start'].includes(method)) {
-      const route = parseHarnessModelId(params.collaborationMode?.settings?.model ?? params.model);
-      if (route) throw new RpcError(harnessRefusal(route).message, -32602);
+      const asked = params.collaborationMode?.settings?.model ?? params.model;
+      if (isHarnessModel(asked)) throw new RpcError(harnessRefusal(parseHarnessModelId(asked) ?? { harness: null }).message, -32602);
     }
     if (this.localResponses && !internal.localRouted)
       return this.localResponses.request(method, params, (m, p) => this.request(m, p, { ...internal, localRouted: true }));

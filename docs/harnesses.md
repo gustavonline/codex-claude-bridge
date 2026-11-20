@@ -31,6 +31,8 @@ A route is *(harness, connection, model)*. A model of a non-native harness is al
 
 - Each turn's SDK query spawns its CLI through the SDK's public `spawnClaudeCodeProcess` hook, so Bridge owns the process.
 - A chat is released only after that process has exited. Bridge waits 5 s, then kills the process and waits again. This applies to the next queued turn, an immediate resend after Stop, and the history checkpoint. None of them overlaps the previous process on the same session.
+- Stop now completes when the process has exited. Measured live, that takes about 1.9–2.0 s mid-stream: the SDK's own graceful close, stdin end, then SIGTERM after about 2 s. Bridge keeps this window so the CLI finishes writing the session that the next turn resumes. Until then the chat refuses a new message as still running.
+- A failed CLI's last stderr lines (bounded) are appended to the turn error, as the SDK does for its own spawn.
 - A CLI that sends no first message within 60 s (`BRIDGE_CLAUDE_BOOT_MS`) fails the turn with a clear error instead of holding it. The model-list probe has the same bound.
 - Bridge keeps one query per turn and does not keep live queries between turns. The measurements below show why.
 

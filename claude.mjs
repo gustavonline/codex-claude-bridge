@@ -25,11 +25,12 @@ export function options(extra = {}) {
 // only when that very process has exited (SDK disposal can return before the process is gone), and kills it if it outlives the grace.
 // A query that never spawned has nothing to wait for. The SDK's own forwarded signal (after its stdin-EOF grace) still ends the child.
 export function ownedProcess({ spawnProcess = spawn, graceMs = exitGraceMs } = {}) {
-  let child = null, done = null;
+  let child = null, done = null, tail = '';
   const spawnClaudeCodeProcess = ({ command, args, cwd, env, signal }) => {
     child = spawnProcess(command, args, { cwd, env, signal, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     done = new Promise(resolve => { child.once('exit', (code, sig) => resolve({ code, signal: sig })); child.once('error', () => { if (child.pid === undefined) resolve({ code: null, signal: null, error: true }); }); }); // an abort's 'error' precedes the real exit
-    child.stderr?.resume(); // drained, never parsed: diagnostics stay in the CLI's own log
+    // A bounded tail of the CLI's stderr, appended to an exit error as the SDK's own spawn does (a custom spawn loses that).
+    child.stderr?.on('data', b => { tail = (tail + b.toString('utf8')).slice(-2000); }); child.stderr?.on('error', () => {});
     return child;
   };
   const exited = async () => {
@@ -40,7 +41,7 @@ export function ownedProcess({ spawnProcess = spawn, graceMs = exitGraceMs } = {
     try { child.kill('SIGKILL'); } catch { /* already gone */ }
     return (await Promise.race([done, timed(killWaitMs)])) ? { state: 'killed' } : { state: 'unconfirmed' };
   };
-  return { spawnClaudeCodeProcess, exited, get pid() { return child?.pid ?? null; } };
+  return { spawnClaudeCodeProcess, exited, stderr: () => tail.trim(), get pid() { return child?.pid ?? null; } };
 }
 
 // The query as Bridge consumes it (async iteration and close), plus `exited()`. Until the CLI's first message arrives the wait is bounded:
@@ -51,6 +52,14 @@ export function bounded(session, owned, { firstMs = bootMs } = {}) {
   return {
     [Symbol.asyncIterator]() { return this; },
     async next() {
+      try { return await this.read(); }
+      catch (error) {
+        const reason = owned.stderr?.(); // what the CLI said before it failed, bounded, as the SDK reports it for its own spawn
+        if (reason && error instanceof Error && !/stderr:/.test(error.message)) error.message += '. stderr: ' + reason.slice(-1000);
+        throw error;
+      }
+    },
+    async read() {
       if (!first) return iterator.next();
       first = false; let timer;
       const late = new Promise((_, reject) => { timer = setTimeout(() => { reject(Object.assign(new Error(`Claude Code did not start within ${Math.round(firstMs / 1000)} s. Nothing was answered; try again.`), { code: 'claude_start_timeout' })); session.close(); }, firstMs); }); // settled before close, so the SDK's own close error cannot win

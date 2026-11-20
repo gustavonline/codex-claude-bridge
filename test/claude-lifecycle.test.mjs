@@ -66,3 +66,10 @@ test('a real spawned process is reaped through the SDK-shaped spawn hook with th
   const pid = owned.pid; controller.abort();
   assert.deepEqual(await owned.exited(), { state: 'exited' }); assert.equal(alive(pid), false);
 });
+
+test('a CLI that fails still reports why: its bounded stderr tail is appended to the SDK error, as the SDK does for its own spawn', async () => {
+  const owned = ownedProcess({ graceMs: 2000 }); owned.spawnClaudeCodeProcess(child('process.stderr.write("No conversation found with session ID: x\\n"); process.exit(1)'));
+  await owned.exited();
+  const failing = bounded({ close() {}, [Symbol.asyncIterator]: () => ({ next: async () => { throw new Error('Claude Code process exited with code 1'); } }) }, owned, { firstMs: 1000 });
+  await assert.rejects(failing.next(), e => e.message === 'Claude Code process exited with code 1. stderr: No conversation found with session ID: x');
+});

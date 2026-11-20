@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { harnessModelId, parseHarnessModelId, routeOf, harnessStatuses, harnesses, antigravityLaunch } from '../plugins/codex-claude/home/harnesses.mjs';
+import { harnessModelId, parseHarnessModelId, routeOf, harnessStatuses, harnesses, antigravityLaunch, findExecutable } from '../plugins/codex-claude/home/harnesses.mjs';
 import { prepareProviderHome, providerControls } from '../plugins/codex-claude/home/provider-controls.mjs';
 import { session } from '../plugins/codex-claude/home/server.mjs';
 import { isClaude } from '../providers.mjs';
@@ -64,4 +64,20 @@ test('the prepared Antigravity launch pins the Google-account route in its own a
   assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin' }); assert.equal(spec.authMethod, 'oauth-personal');
   assert.deepEqual(spec.args, ['acp', '--app-data-dir', '/state/antigravity', '--disable-telemetry', '--sandbox']);
   assert.throws(() => antigravityLaunch({ executable: 'agy', appDataDir: '/s' }), { code: 'route_invalid' });
+});
+
+test('every ID the builder makes parses back, and a malformed harness-namespace ID is refused too, never passed on as a native model', async () => {
+  for (const model of ['é'.repeat(256), 'x'.repeat(512), '🙂'.repeat(128)]) assert.equal(parseHarnessModelId(harnessModelId('antigravity', 'g1', model)).model, model);
+  assert.throws(() => harnessModelId('antigravity', 'g1', 'é'.repeat(257)), { code: 'route_invalid' });
+  const f = fixture(); try {
+    const n = f.calls.length;
+    await assert.rejects(f.bridge.request('thread/start', { model: 'bridge-harness/antigravity/c/not=base64' }), e => e.code === -32602 && /not available in Model Bridge yet/.test(e.message));
+    assert.equal(f.calls.length, n);
+  } finally { f.close(); }
+});
+
+test('a runtime installed in the usual per-user or Homebrew place is found even when a desktop PATH omits it', () => {
+  const home = mkdtempSync(join(tmpdir(), 'bridge-home-')), bin = join(home, '.local/bin'); mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'agy'), '#!/bin/sh\n', { mode: 0o755 });
+  assert.equal(findExecutable('agy', { path: '/usr/bin', home }), join(bin, 'agy')); assert.equal(findExecutable('agy', { path: '/usr/bin', home: '' }), null);
 });

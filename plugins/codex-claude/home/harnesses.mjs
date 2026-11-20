@@ -11,7 +11,7 @@ export const harnessPrefix = 'bridge-harness/';
 const b64 = value => Buffer.from(value, 'utf8').toString('base64url');
 const part = /^[a-z][a-z0-9-]{1,31}$/;
 export function harnessModelId(harness, connectionId, model) {
-  if (!part.test(harness) || !/^[a-z0-9-]{1,64}$/.test(connectionId) || typeof model !== 'string' || !model || model.length > 512) throw Object.assign(new Error('Invalid harness route'), { code: 'route_invalid' });
+  if (!part.test(harness) || !/^[a-z0-9-]{1,64}$/.test(connectionId) || typeof model !== 'string' || !model || Buffer.byteLength(model) > 512) throw Object.assign(new Error('Invalid harness route'), { code: 'route_invalid' });
   return `${harnessPrefix}${harness}/${connectionId}/${b64(model)}`;
 }
 export function parseHarnessModelId(id) {
@@ -51,8 +51,11 @@ export const harnesses = Object.freeze(descriptors);
 export const harness = id => harnesses.find(h => h.id === id) ?? null;
 
 // An executable found on PATH (or at an explicit absolute path) is only "found": it is never run here, so its version, sign-in and models stay unknown.
-export function findExecutable(name, { path = process.env.PATH ?? '' } = {}) {
-  for (const dir of isAbsolute(name) ? [''] : path.split(delimiter).filter(isAbsolute)) {
+// A desktop app's PATH usually lacks the per-user and Homebrew locations installers use, so those are searched too.
+const usual = home => [join(home, '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin'];
+export function findExecutable(name, { path = process.env.PATH ?? '', home = process.env.HOME ?? '' } = {}) {
+  const dirs = [...new Set([...path.split(delimiter), ...(isAbsolute(home) ? usual(home) : [])])].filter(isAbsolute);
+  for (const dir of isAbsolute(name) ? [''] : dirs) {
     const candidate = dir ? join(dir, name) : name;
     try { if (statSync(candidate).isFile()) { accessSync(candidate, constants.X_OK); return candidate; } } catch { /* not here */ }
   }
@@ -66,6 +69,8 @@ export function harnessStatuses({ find = findExecutable } = {}) {
     ...(h.minimumVersion ? { minimumVersion: h.minimumVersion } : {}), ...(h.auth ? { auth: h.auth } : {}),
     signIn: 'unknown', catalog: 'unknown', execution: 'not_qualified', reason: h.reason }));
 }
+// Any model ID in the harness namespace, well formed or not: it never names a Codex or Claude model, so it is never passed on.
+export const isHarnessModel = id => typeof id === 'string' && id.startsWith(harnessPrefix);
 // The refusal for a harness route that reached execution anyway (a pasted or stale model ID): explicit, before anything is created.
 export function harnessRefusal(route) {
   const h = harness(route.harness);
