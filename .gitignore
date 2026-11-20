@@ -9,3 +9,5 @@ work/
 .env
 .env.*
 !.env.example
+Paper/*/.history/
+Paper/*/feedback.json

@@ -1,6 +1,6 @@
 {
   "name": "codex-claude-bridge-local",
-  "version": "0.3.0-rc.9",
+  "version": "0.3.0-rc.13",
   "private": true,
   "type": "module",
   "description": "Model Bridge — Claude models beneath the unmodified Codex desktop UI",
@@ -13,6 +13,15 @@
     "smoke.mjs",
     "bridge.mjs",
     "capabilities.mjs",
+    "connections.mjs",
+    "continuity.mjs",
+    "runtime-handoff.mjs",
+    "custom-turns.mjs",
+    "plugins/codex-claude/home/providers.mjs",
+    "plugins/codex-claude/home/credential-helper.mjs",
+    "plugins/codex-claude/home/native-secrets.mjs",
+    "plugins/codex-claude/home/connection-policy.mjs",
+    "plugins/codex-claude/home/os-secret.py",
     "claude.mjs",
     "fork.mjs",
     "history.mjs",
@@ -29,7 +38,10 @@
     "README.md",
     "LICENSE",
     "docs",
-    "npm-shrinkwrap.json"
+    "npm-shrinkwrap.json",
+    "history-read.mjs",
+    "context-handoff.mjs",
+    "transition-notice.mjs"
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",

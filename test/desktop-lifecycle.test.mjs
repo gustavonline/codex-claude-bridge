@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { fixture } from './support/fixture.mjs';
@@ -372,4 +373,93 @@ test('a message queued behind a held turn is announced and listed until its own 
     assert.deepEqual([turn.status, turn.items[0].id, turn.items[0].content], ['completed', 'synthetic-queued', input]);
     assert.equal(f.queries.length, 2);
   } finally { release.resolve(); f.close(); }
+});
+
+test('each Claude turn announces its own user message once, so a queued message appears when its turn starts', async () => {
+  const f = fixture(), entered = gate(), release = gate();
+  const announced = turnId => f.events.filter(e => ['item/started', 'item/completed'].includes(e.method)
+    && e.params.turnId === turnId && e.params.item.type === 'userMessage');
+  try {
+    const id = await f.start();
+    f.controls.query = async () => { entered.resolve(); await release.promise; };
+    const direct = [{ type: 'text', text: 'SYNTHETIC DIRECT' }], queued = [{ type: 'text', text: 'SYNTHETIC QUEUED' }];
+    const first = await f.bridge.request('turn/start', { threadId: id, input: direct, clientUserMessageId: 'synthetic-direct' });
+    await entered.promise;
+    await f.bridge.request('thread/queue/add', { threadId: id, clientUserMessageId: 'synthetic-queued', input: queued });
+    f.controls.query = undefined; release.resolve(); await f.done(first.turn.id);
+    const started = await f.wait(e => e.method === 'turn/started' && e.params.turn.id !== first.turn.id);
+    await f.done(started.params.turn.id);
+    for (const [turnId, clientId, content] of [[first.turn.id, 'synthetic-direct', direct], [started.params.turn.id, 'synthetic-queued', queued]]) {
+      const user = announced(turnId);
+      assert.deepEqual(user.map(e => e.method), ['item/started', 'item/completed'], clientId);
+      // Lifecycle times are checked by the contract test below.
+      for (const { params: { startedAtMs, completedAtMs, ...rest } } of user)
+        assert.deepEqual(rest, { threadId: id, turnId, item: { type: 'userMessage', id: clientId, clientId, content } });
+      // turn/started, then the user's message, then Claude's answer.
+      const position = predicate => f.events.findIndex(predicate);
+      const turnStarted = position(e => e.method === 'turn/started' && e.params.turn.id === turnId);
+      const userStarted = f.events.indexOf(user[0]);
+      const answer = position(e => e.method === 'item/started' && e.params.turnId === turnId && e.params.item.type === 'agentMessage');
+      assert.ok(turnStarted < userStarted && userStarted < answer, clientId);
+      const stored = f.bridge.records.get(id).turns.find(t => t.id === turnId).items[0];
+      assert.deepEqual([stored.id, stored.content], [clientId, content], 'canonical history holds the same message');
+    }
+    // A retried start returns the accepted turn without announcing its message again.
+    const count = f.events.length;
+    assert.equal((await f.bridge.request('turn/start', { threadId: id, input: direct, clientUserMessageId: 'synthetic-direct' })).turn.id, first.turn.id);
+    assert.equal(f.events.length, count);
+    // Steering keeps its own single announcement per steered message.
+    const held = gate(), resume = gate();
+    f.controls.query = async () => { held.resolve(); await resume.promise; };
+    const third = await f.send(id, 'SYNTHETIC THIRD');
+    await held.promise;
+    const steer = [{ type: 'text', text: 'SYNTHETIC STEER' }];
+    await f.bridge.request('turn/steer', { threadId: id, expectedTurnId: third.turn.id, input: steer, clientUserMessageId: 'synthetic-steer' });
+    f.controls.query = undefined; resume.resolve(); await f.done(third.turn.id);
+    assert.equal(announced(third.turn.id).filter(e => e.params.item.id === 'synthetic-steer').length, 2);
+    assert.equal(announced(third.turn.id).length, 4, 'one started/completed pair each for the turn message and the steer');
+    // An interrupted turn still shows the message it was given, exactly once.
+    const blocked = gate(), unblock = gate();
+    f.controls.query = async () => { blocked.resolve(); await unblock.promise; };
+    const fourth = await f.bridge.request('turn/start', { threadId: id, input: direct, clientUserMessageId: 'synthetic-interrupted' });
+    await blocked.promise;
+    await f.bridge.request('turn/interrupt', { threadId: id, turnId: fourth.turn.id });
+    f.controls.query = undefined; unblock.resolve(); await f.done(fourth.turn.id);
+    assert.equal(f.bridge.records.get(id).turns.find(t => t.id === fourth.turn.id).status, 'interrupted');
+    assert.deepEqual(announced(fourth.turn.id).map(e => [e.method, e.params.item.id]),
+      [['item/started', 'synthetic-interrupted'], ['item/completed', 'synthetic-interrupted']]);
+  } finally { release.resolve(); f.close(); }
+});
+
+// Codex CLI 0.163 ItemStartedNotification requires startedAtMs and
+// ItemCompletedNotification requires completedAtMs (int64 Unix milliseconds).
+test('item notifications carry their required Unix-millisecond lifecycle time, and native times are kept', async () => {
+  const f = fixture(), held = gate(), resume = gate();
+  try {
+    const id = await f.start();
+    f.controls.query = async () => { held.resolve(); await resume.promise; };
+    const before = Date.now();
+    const sent = await f.bridge.request('turn/start', { threadId: id, input: [{ type: 'text', text: 'SYNTHETIC TIMED' }], clientUserMessageId: 'synthetic-timed' });
+    await held.promise;
+    await f.bridge.request('turn/steer', { threadId: id, expectedTurnId: sent.turn.id,
+      input: [{ type: 'text', text: 'SYNTHETIC TIMED STEER' }], clientUserMessageId: 'synthetic-timed-steer' });
+    f.controls.query = undefined; resume.resolve(); await f.done(sent.turn.id);
+    const after = Date.now();
+    const items = f.events.filter(e => ['item/started', 'item/completed'].includes(e.method) && e.params.turnId === sent.turn.id);
+    assert.deepEqual([...new Set(items.map(e => e.params.item.type))].sort(), ['agentMessage', 'userMessage'], 'opening, steered and answer items');
+    const started = new Map();
+    for (const { method, params } of items) {
+      const [own, other] = method === 'item/started' ? ['startedAtMs', 'completedAtMs'] : ['completedAtMs', 'startedAtMs'];
+      assert.ok(Number.isInteger(params[own]) && params[own] >= before && params[own] <= after, `${method} ${params.item.id}`);
+      assert.equal(params[other], undefined, `${method} carries only its own lifecycle time`);
+      if (method === 'item/started') started.set(params.item.id, params.startedAtMs);
+      else assert.ok(params.completedAtMs >= started.get(params.item.id), `${params.item.id} completes after it starts`);
+    }
+    // A notification that native already timed is forwarded unchanged.
+    const native = randomUUID(), turnId = randomUUID(), item = { type: 'agentMessage', id: randomUUID(), text: 'SYNTHETIC NATIVE' };
+    await f.bridge.nativeNotification('item/started', { threadId: native, turnId, item, startedAtMs: 1000 });
+    await f.bridge.nativeNotification('item/completed', { threadId: native, turnId, item, completedAtMs: 2000 });
+    assert.deepEqual(f.events.filter(e => e.params.threadId === native).map(e => [e.method, e.params.startedAtMs ?? e.params.completedAtMs]),
+      [['item/started', 1000], ['item/completed', 2000]]);
+  } finally { resume.resolve(); f.close(); }
 });

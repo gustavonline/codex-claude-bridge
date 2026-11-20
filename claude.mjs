@@ -58,9 +58,19 @@ export async function inputContent(input, additionalContext) {
   return blocks;
 }
 
-export function startQuery({ record, input, additionalContext, promptId, systemPrompt, mcp, controller, outputSchema, steeringInput }) {
+// The provider's OWN compaction, observed and nothing more: the installed SDK's in-process PostCompact hook hands over the summary the model itself wrote (plaintext,
+// session, trigger). No second summarizer, no model call, no private file is involved; the callback only ever returns {} so it cannot change what the SDK does,
+// and an error in observing it never reaches the SDK.
+export const compactionHooks = onCompact => typeof onCompact === 'function'
+  ? { PostCompact: [{ hooks: [async input => { try { await onCompact(input); } catch { /* observing is advisory */ } return {}; }] }] } : undefined;
+
+// `onPrompt` is called immediately BEFORE the first prompt is handed to the SDK (after its content was built): a local, unspoofable fact. A query whose prompt was never handed to the SDK cannot
+// have reached any model, so a failure before it is a definite no-effect; once it was handed, the outcome is only known from what the model actually answered.
+export function startQuery({ record, input, additionalContext, promptId, systemPrompt, mcp, controller, outputSchema, steeringInput, onCompact, onPrompt }) {
   const prompt = (async function* () {
-    yield { type: 'user', uuid: promptId, message: { role: 'user', content: await inputContent(input, additionalContext) }, parent_tool_use_id: null, session_id: record.claudeSessionId ?? '' };
+    const content = await inputContent(input, additionalContext);
+    onPrompt?.();
+    yield { type: 'user', uuid: promptId, message: { role: 'user', content }, parent_tool_use_id: null, session_id: record.claudeSessionId ?? '' };
     if (steeringInput) yield* steeringInput;
   })();
   return query({ prompt, options: options({
@@ -71,6 +81,7 @@ export function startQuery({ record, input, additionalContext, promptId, systemP
     systemPrompt: { type: 'custom', prompt: systemPrompt, snapshot: false },
     mcpServers: { codex: mcp }, includePartialMessages: true, persistSession: !record.thread.ephemeral,
     abortController: controller,
+    ...(onCompact ? { hooks: compactionHooks(onCompact) } : {}),
     extraArgs: { 'strict-mcp-config': null, 'replay-user-messages': null },
     canUseTool: async (name, args) => name.startsWith('mcp__codex__')
       ? { behavior: 'allow', updatedInput: args }
