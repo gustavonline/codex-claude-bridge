@@ -12,6 +12,8 @@ import { isAbsolute } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
+import { startSandboxed, sandboxRunDir } from '../harness-sandbox.mjs';
+const sandboxed = process.env.PROBE_SANDBOX === '1';
 const [consent, agy, parent, policy = 'deny', promptJson, extraJson = '[]'] = process.argv.slice(2);
 if (consent !== '--run') throw new Error('This sends real Antigravity turns on an existing login. Pass --run to authorize a few short synthetic turns.');
 if (!isAbsolute(agy ?? '') || !isAbsolute(parent ?? '') || !['deny', 'mcp-only', 'allow'].includes(policy)) throw new Error('Usage: --run <absolute agy> <absolute scratch dir> <deny|mcp-only|allow> <json prompts> [json acp args]');
@@ -30,13 +32,20 @@ const http = createServer(async (req, res) => {
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined }); res.on('close', () => { transport.close(); server.close(); });
   await server.connect(transport); let body = ''; req.on('data', b => { body += b; }); req.on('end', () => transport.handleRequest(req, res, body ? JSON.parse(body) : undefined));
 });
-await new Promise(r => http.listen(0, '127.0.0.1', r)); const port = http.address().port;
+// Unsandboxed, the MCP endpoint is a loopback port; sandboxed, it is a Unix socket in the run directory that the sandbox relays to its own loopback.
+const boxDir = sandboxed ? sandboxRunDir() : join(root, 'box'); if (!sandboxed) mkdirSync(boxDir); // the sandbox's own writable run directory: never the workspace
+const mcpSocket = join(boxDir, 'mcp.sock');
+await new Promise(r => sandboxed ? http.listen(mcpSocket, r) : http.listen(0, '127.0.0.1', r)); const port = sandboxed ? null : http.address().port;
 const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|VERTEX|AGY_|OPENAI_|ANTHROPIC_|CLAUDE|CODEX_|BRIDGE_)/.test(k)));
 Object.assign(env, { ...(process.env.GEMINI_HOME ? { GEMINI_HOME: process.env.GEMINI_HOME } : {}), AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1', BROWSER: '/bin/false', SSH_CONNECTION: '127.0.0.1 0 127.0.0.1 0', TMPDIR: join(root, 'tmp') });
 mkdirSync(env.TMPDIR);
 const t0 = performance.now();
-const child = spawn(agy, ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(root, 'acp.log'), ...extraArgs],
-  { cwd: ws, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
+const acpArgs = ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(sandboxed ? boxDir : root, 'acp.log'), ...extraArgs];
+// Sandboxed: the whole agy tree runs inside harness-sandbox.mjs (read-only filesystem except agy's own state, no network but Google's endpoints).
+const box = sandboxed ? await startSandboxed({ command: agy, args: acpArgs, cwd: ws, env: { ...env, TMPDIR: '/tmp' }, writable: [join(env.HOME, '.gemini')], runDir: boxDir,
+  allow: ['daily-cloudcode-pa.googleapis.com:443', 'oauth2.googleapis.com:443'], mcpSocket }) : null;
+if (box) report.sandbox = true;
+const child = box ? box.child : spawn(agy, acpArgs, { cwd: ws, env, stdio: ['pipe', 'pipe', 'pipe'], detached: true });
 let buf = '', id = 0; const waiting = new Map(); child.stderr.on('data', b => { report.stderr = ((report.stderr ?? '') + b).slice(-800); });
 const send = m => child.stdin.write(JSON.stringify(m) + '\n');
 const rpc = (method, params, ms = 120000) => new Promise((resolve, reject) => { const i = ++id; const t = setTimeout(() => { waiting.delete(i); reject(new Error(method + ' timeout')); }, ms); waiting.set(i, m => { clearTimeout(t); m.error ? reject(Object.assign(new Error(method + ': ' + m.error.message), { rpc: m.error })) : resolve(m.result); }); send({ jsonrpc: '2.0', id: i, method, params }); });
@@ -65,7 +74,7 @@ try {
   const init = await rpc('initialize', { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: 'model-bridge', version: '0.3.0' } });
   report.initMs = Math.round(performance.now() - t0); report.agent = init.agentInfo?.version;
   await rpc('authenticate', { methodId: 'oauth-personal' }); report.authMs = Math.round(performance.now() - t0);
-  const s = await rpc('session/new', { cwd: ws, mcpServers: [{ type: 'http', name: 'codex', url: `http://127.0.0.1:${port}/mcp`, headers: [] }] });
+  const s = await rpc('session/new', { cwd: ws, mcpServers: [{ type: 'http', name: 'codex', url: box ? box.mcpUrl : `http://127.0.0.1:${port}/mcp`, headers: [] }] });
   report.sessionMs = Math.round(performance.now() - t0); const sessionId = s.sessionId;
   report.models = s.models?.availableModels?.map(m => m.modelId);
   await rpc('session/set_config_option', { sessionId, configId: 'model', value: 'gemini-3.8-flash' }).catch(e => report.errors.push('set model: ' + e.message));
@@ -80,6 +89,7 @@ try {
 // Effects, then owned teardown of the whole process group.
 report.workspaceFiles = readdirSync(ws, { recursive: true }).filter(f => !f.startsWith('.agents')); report.outsideFiles = readdirSync(outside, { recursive: true });
 const tree = () => { try { return execFileSync('ps', ['-o', 'pid=', '-g', String(child.pid)], { encoding: 'utf8' }).trim().split('\n').filter(Boolean).length; } catch { return 0; } };
+if (box) { report.processesBeforeClose = 'sandboxed'; report.close = await box.close(); report.proxyDecisions = box.decisions; report.leftover = execFileSync('ps', ['-eo', 'args='], { encoding: 'utf8' }).split('\n').filter(l => (l.includes(root) || l.includes(boxDir)) && !l.includes('qualify-antigravity')).length; http.close(); delete report.promptAt; console.log(JSON.stringify(report, null, 1)); process.exit(0); }
 report.processesBeforeClose = tree();
 const t1 = performance.now(); child.stdin.end();
 const exited = await Promise.race([new Promise(r => child.once('exit', () => r(true))), new Promise(r => setTimeout(() => r(false), 5000))]);
