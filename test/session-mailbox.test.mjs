@@ -74,3 +74,31 @@ test('only a created chat can report, only to its creator; creation depth is bou
     assert.match((await call(f, child, childTurn(), 'manage', { operation: 'create', model: 'sonnet', text: 'deeper', requestId: 'too-deep-00001' })).error, /levels deep/);
   } finally { await end(); }
 });
+
+test('a created child gets exactly its GPT parent\'s desktop tools, discovers them, and its call is relayed to the desktop under the child\'s own thread; an unknown tool set is said so', async () => {
+  const f = primary(), gate = deferred(), relayed = [];
+  f.bridge.desktop.request = async (method, params) => { relayed.push({ method, params }); return { success: true, contentItems: [{ type: 'inputText', text: 'queued: opened example page' }] }; };
+  const browser = { type: 'function', name: 'browser_open', description: 'Open a page in the in-app browser', inputSchema: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } };
+  try {
+    const parent = (await f.bridge.request('thread/start', { cwd: f.statePath, dynamicTools: [browser] })).thread.id; await turnOn(f.bridge, parent, 'p1');
+    f.controls.query = () => gate.promise;
+    const created = await call(f, parent, 'p1', 'manage', { operation: 'create', model: 'sonnet', text: 'Open the test page.', requestId: 'create-tools-0001' });
+    assert.deepEqual(created.desktopTools, ['browser_open']); assert.equal(created.desktopToolsNote, undefined);
+    const child = f.bridge.records.get(created.threadId);
+    assert.deepEqual(child.options.dynamicTools.map(t => t.name), ['browser_open', sessionNamespace], 'the parent\'s desktop tool and Bridge\'s namespace, nothing else');
+    const { discover } = await import('../capabilities.mjs');
+    const found = await discover({ request: async (m, p) => m === 'mcpServerStatus/list' ? { data: [] } : f.bridge.native.request(m, p) }, child);
+    assert.ok(found.some(t => t.route?.tool === 'browser_open' || t.name?.includes('browser_open')), 'the child discovers it');
+    while (!f.bridge.active.get(child.thread.id)) await new Promise(r => setTimeout(r, 5));
+    const out = await f.bridge.toolRequest('item/tool/call', { threadId: child.thread.id, turnId: f.bridge.active.get(child.thread.id).turn.id, callId: 'c1', tool: 'browser_open', arguments: { url: 'https://example.com/' } });
+    assert.deepEqual(relayed.map(r => [r.method, r.params.threadId, r.params.tool]), [['item/tool/call', child.thread.id, 'browser_open']]);
+    assert.equal(out.contentItems[0].text, 'queued: opened example page', 'the desktop\'s own answer, unchanged (queued is not "visible")');
+    // A caller Bridge did not see start (its tools unknown) gives its child none, and the result says so.
+    f.bridge.nativeCallers.get(parent).options.dynamicTools = undefined; gate.resolve(); f.controls.query = undefined;
+    for (let i = 0; i < 400 && f.bridge.active.has(child.thread.id); i++) await new Promise(r => setTimeout(r, 5));
+    const bare = await call(f, parent, 'p1', 'manage', { operation: 'create', model: 'sonnet', text: 'Second.', requestId: 'create-tools-0002' });
+    assert.deepEqual(bare.desktopTools, []); assert.match(bare.desktopToolsNote, /not known to Bridge/);
+    assert.deepEqual(f.bridge.records.get(bare.threadId).options.dynamicTools.map(t => t.name), [sessionNamespace]);
+    for (let i = 0; i < 400 && f.bridge.active.has(bare.threadId); i++) await new Promise(r => setTimeout(r, 5));
+  } finally { gate.resolve(); await new Promise(r => setTimeout(r, 30)); f.close(); }
+});

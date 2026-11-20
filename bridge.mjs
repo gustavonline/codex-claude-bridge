@@ -1223,7 +1223,8 @@ export class Bridge {
         // Primary mode: a new GPT chat stays native and GPT-owned, and also
         // receives the public session tools so it can start and steer Claude chats.
         const result = await this.native.request(method, withHistoryTools(withSessionTools(params)));
-        this.trackCaller(result, params.config);
+        // The desktop's own tools for this chat (before Bridge's namespaces) are remembered: a chat it creates gets exactly those, nothing more.
+        this.trackCaller(result, params.config, params.dynamicTools);
         return result;
       }
       const model = await this.selectModel(requested);
@@ -1386,7 +1387,7 @@ export class Bridge {
   // An unmanaged GPT chat's coordination state. cwd is its latest native-confirmed
   // workspace (response-level cwd first); thread.cwd is the workspace of its
   // current turn. Without a known workspace it gets no coordination.
-  trackCaller(result, config) {
+  trackCaller(result, config, dynamicTools) {
     const thread = result?.thread;
     if (!this.coordinateNative || !thread?.id || this.records.has(thread.id)) return;
     const previous = this.nativeCallers.get(thread.id), cwd = result.cwd ?? thread.cwd;
@@ -1394,8 +1395,10 @@ export class Bridge {
       if (previous) { this.endCallerTurn(previous, 'The calling chat’s workspace is unknown'); this.nativeCallers.delete(thread.id); }
       return;
     }
+    // Only thread/start carries the desktop's tools; a resume or fork in this process keeps what its start reported, and after a restart it is unknown.
+    const tools = Array.isArray(dynamicTools) ? structuredClone(dynamicTools) : previous?.options.dynamicTools;
     const caller = { thread: { id: thread.id, cwd, ephemeral: !!thread.ephemeral, name: thread.name ?? null }, cwd,
-      options: { config: config ?? {} }, sandbox: result.sandbox, approvalPolicy: result.approvalPolicy,
+      options: { config: config ?? {}, ...(tools ? { dynamicTools: tools } : {}) }, sandbox: result.sandbox, approvalPolicy: result.approvalPolicy,
       activePermissionProfile: result.activePermissionProfile ?? null, disabledPluginIds: result.disabledPluginIds ?? [], turn: null };
     if (previous?.turn) {
       // A reopened chat keeps its running turn only in that turn's workspace.

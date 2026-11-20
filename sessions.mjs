@@ -7,6 +7,7 @@ import { errorMetadata } from './logging.mjs';
 import { permissionState, requestApproval } from './capabilities.mjs';
 import { forkCount } from './fork.mjs';
 import { isClaude } from './providers.mjs';
+import { historyNamespace } from './history-read.mjs';
 
 export const sessionNamespace = 'codex_bridge_sessions';
 const schema = properties => ({ type: 'object', properties, required: ['operation'], additionalProperties: false });
@@ -389,9 +390,13 @@ async function create(bridge, caller, args, signal, turnId) {
     throw new RpcError('Previous create outcome is uncertain; inspect the session list before any new request', -32602);
   }
   const config = permissions.config;
+  // The caller's own desktop tools (browser, app panels, ...), exactly as the desktop gave them to it; Bridge's namespaces are added by the start.
+  // A caller whose tools are unknown (an adopted or reopened chat after a restart) gives the child none, and says so.
+  const desktopTools = (caller.options?.dynamicTools ?? []).filter(t => t?.name !== sessionNamespace && t?.name !== historyNamespace);
   const creating = (async () => {
     const created = await bridge.request('thread/start', { cwd, model: args.model, approvalPolicy: permissions.approvalPolicy,
-      ...(Object.keys(config).length ? { config: structuredClone(config) } : {}), ...(profile ? { permissions: profile } : { sandbox: mode }) });
+      ...(Object.keys(config).length ? { config: structuredClone(config) } : {}), ...(profile ? { permissions: profile } : { sandbox: mode }),
+      ...(desktopTools.length ? { dynamicTools: structuredClone(desktopTools) } : {}) });
     const threadId = created.thread.id, target = bridge.records.get(threadId);
     target.sessionCreate = { callerThreadId: callerId, requestId: args.requestId, callerCwd: cwd, depth }; bridge.save(target);
     completeReceipt(key, { ...reservation, threadId });
@@ -408,8 +413,10 @@ async function create(bridge, caller, args, signal, turnId) {
     return threadId;
   })();
   (bridge.sessionCreating ??= new Map()).set(key, creating);
-  try { return deliver(await creating); }
-  finally { if (bridge.sessionCreating.get(key) === creating) bridge.sessionCreating.delete(key); }
+  try {
+    const delivered = await deliver(await creating);
+    return { ...delivered, desktopTools: desktopTools.map(t => t.name), ...(caller.options?.dynamicTools ? {} : { desktopToolsNote: 'This chat\'s desktop tools are not known to Bridge (it was not started in this Bridge process), so the new chat has none of them.' }) };
+  } finally { if (bridge.sessionCreating.get(key) === creating) bridge.sessionCreating.delete(key); }
 }
 
 // An in-process adapter over existing bridge/public app-server contracts. No
