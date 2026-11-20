@@ -46,11 +46,11 @@ test('catalog GET carries no auth/proxy/env headers, follows no redirect and con
   const t = transport(); assert.deepEqual(await discoverLocal(url, t), ['qwen3.5:4b', 'qwen3.8:27b']);
   assert.equal(t.calls.length, 1); assert.equal(t.calls[0].target, url + '/models');
   assert.deepEqual(t.calls[0].options, { method: 'GET', agent: false, headers: { Accept: 'application/json' } });
-  for (const status of [301, 302, 303, 307, 308, 401, 500]) {
-    const denied = transport({ status }); await assert.rejects(discoverLocal(url, denied), { code: 'catalog_failed' });
+  for (const [status, code] of [[301, 'catalog_failed'], [302, 'catalog_failed'], [303, 'catalog_failed'], [307, 'catalog_failed'], [308, 'catalog_failed'], [401, 'catalog_auth_required'], [403, 'catalog_auth_required'], [429, 'catalog_rate_limited'], [500, 'catalog_failed']]) {
+    const denied = transport({ status }); await assert.rejects(discoverLocal(url, denied), { code });
     assert.equal(denied.calls.length, 1, 'no follow-up request to Location'); assert.ok(denied.calls[0].req.destroyed);
   }
-  await assert.rejects(discoverLocal(url, transport({ chunks: [Buffer.alloc(512 * 1024 + 1)] })), { code: 'catalog_failed' });
+  await assert.rejects(discoverLocal(url, transport({ chunks: [Buffer.alloc(2 * 1024 * 1024 + 1)] })), { code: 'catalog_failed' });
   await assert.rejects(discoverLocal(url, { ...transport({ stall: true }), timeoutMs: 10 }), { code: 'catalog_failed' });
   for (const invalid of [{ models: [{ slug: 'qwen' }] }, { data: [{ id: 'a' }, { id: 'a' }] }, { data: [{ id: 'white space' }] }, { data: [] , extra: 'accepted list envelope' }]) {
     if (invalid.data?.length === 0) assert.deepEqual(catalogModels(invalid), []);
@@ -95,7 +95,7 @@ test('Bridge opts in only a new selected local thread; GPT/default/Claude catalo
   const before = (await f.bridge.request('model/list', {})).data;
   assert.deepEqual(before.slice(0, 4).map(x => x.id), ['gpt-test', 'gpt-other', 'haiku', 'sonnet'], 'native GPT/Claude catalog remains first and unchanged');
   assert.deepEqual(before.slice(4).map(x => x.id), s.catalog.models.map(model => localModelId(s.connectionId, model)), 'discovered IDs are offered as conservative Bridge presets');
-  assert.ok(before.slice(4).every(x => x.isDefault === false && /unverified/.test(x.description)));
+  assert.ok(before.slice(4).every(x => x.isDefault === false && /depends on the model/.test(x.description)), 'presets never claim verified tool support');
   const native = await f.start('gpt-test'), claude = await f.start('haiku');
   const cid = await f.start('bridge-responses/selected', { sandbox: 'read-only', approvalPolicy: 'untrusted', config: { arbitrary_existing_setting: true } });
   const call = f.calls.filter(x => x.method === 'thread/start').at(-1).params, pid = 'bridge_custom_' + s.connectionId;
@@ -110,8 +110,8 @@ test('Bridge opts in only a new selected local thread; GPT/default/Claude catalo
   assert.equal(f.hosts.get(native).provider, 'openai'); assert.equal(f.bridge.records.get(claude).provider, 'claude');
   assert.equal((await f.bridge.native.request('config/read', {})).config.model, 'gpt-test');
   const attempted = f.calls.length;
-  for (const params of [{ threadId: native, model: s.selected }, { threadId: claude, model: s.selected }, { threadId: cid, model: 'haiku' },
-    { threadId: cid, config: { 'model_providers.' : {} } }, { threadId: cid, modelProvider: 'openai' }])
+  // Provider and config overrides are refused before native. (A model change is no longer refused: it is the guarded hand-off below.)
+  for (const params of [{ threadId: cid, config: { 'model_providers.' : {} } }, { threadId: cid, modelProvider: 'openai' }])
     await assert.rejects(f.bridge.request('turn/start', { input: [{ type: 'text', text: 'refused' }], ...params }));
   assert.equal(f.calls.length, attempted, 'refused changes never reach native');
   const turn = await f.send(cid, 'local synthetic'); await f.done(turn.turn.id);
@@ -120,6 +120,12 @@ test('Bridge opts in only a new selected local thread; GPT/default/Claude catalo
   assert.equal(reopened.model, s.selected); assert.equal(reopened.modelProvider, pid);
   const next = await f.send(cid, 'follow up'); await f.done(next.turn.id);
   assert.equal(f.hosts.get(cid).thread.turns.length, 2);
+  // A model change on turn/start continues the SAME conversation on a new private child of the chosen runtime; the original host keeps its provider.
+  const moved = await f.bridge.request('turn/start', { threadId: native, model: s.selected, input: [{ type: 'text', text: 'moved' }] }); await f.done(moved.turn.id);
+  const link = f.bridge.localResponses.readLink(native);
+  assert.deepEqual([link.logicalId, link.kind, link.connectionId], [native, 'custom', s.connectionId]); assert.notEqual(link.physicalId, native);
+  assert.equal(f.hosts.get(link.physicalId).provider, pid); assert.equal(f.hosts.get(native).provider, 'openai', 'the original native host is unchanged');
+  assert.equal(f.queries.length, 0);
 });
 
 test('local route delegates streaming/tool/approval/queue/interrupt data without changing native messages or substituting a harness', async () => {

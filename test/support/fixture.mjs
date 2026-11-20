@@ -12,8 +12,10 @@ export function fixture(configuredProvider = 'openai', bridgeOptions = {}) {
   const hosts = new Map(), calls = [], events = [], queries = [], checkpoints = [], controls = {};
   let bridge;
   const nativeModel = model => ({ id: model, model, defaultReasoningEffort: 'low', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] });
-  const response = host => ({ thread: structuredClone(host.thread), model: host.settings.model, modelProvider: host.provider,
-    sandbox: host.settings.sandboxPolicy, approvalPolicy: host.approvalPolicy ?? 'never', instructionSources: [], disabledPluginIds: [] });
+  const response = host => ({ thread: structuredClone(host.thread), cwd: host.thread.cwd, model: host.settings.model, modelProvider: host.provider,
+    sandbox: host.settings.sandboxPolicy, approvalPolicy: host.approvalPolicy ?? 'never', instructionSources: [], disabledPluginIds: [],
+    // Experimental-API fields of the pinned native ThreadStart/Resume/ForkResponse (0.166/0.167 `generate-json-schema --experimental`).
+    reasoningEffort: host.settings.effort ?? null, approvalsReviewer: 'user', activePermissionProfile: null, runtimeWorkspaceRoots: [host.thread.cwd] });
   // One fake native host shared by every Bridge instance (as instances share a
   // profile), with notifications sent to the instance that made the request.
   const nativeRequest = async (method, p, bridge) => {
@@ -35,6 +37,8 @@ export function fixture(configuredProvider = 'openai', bridgeOptions = {}) {
       Object.assign(host.settings, p);
       await bridge.nativeNotification('thread/settings/updated', { threadId: p.threadId, threadSettings: structuredClone(host.settings) }); return {};
     }
+    // Native echoes a name write as thread/name/updated on its own notification path, after the answer.
+    if (method === 'thread/name/set') { if (host) host.thread.name = p.name; setImmediate(() => bridge.nativeNotification('thread/name/updated', { threadId: p.threadId, threadName: p.name })); return {}; }
     if (method === 'thread/unsubscribe') { await bridge.nativeNotification('thread/closed', { threadId: p.threadId }); return { status: 'unsubscribed' }; }
     if (method === 'thread/turns/list') return { data: structuredClone(host.thread.turns) };
     if (method === 'thread/items/list') return { data: host.thread.turns.find(t => t.id === p.turnId).items.map(item => ({ turnId: p.turnId, item: structuredClone(item) })) };
@@ -91,11 +95,14 @@ export function fixture(configuredProvider = 'openai', bridgeOptions = {}) {
     runQuery: args => {
       queries.push({ ...args, record: structuredClone(args.record) });
       const stream = (async function* () {
-        yield { type: 'system', session_id: args.record.claudeSessionId ?? randomUUID() };
+        const sid = args.record.claudeSessionId ?? randomUUID();
+        yield { type: 'system', session_id: sid };
         if (controls.query) await controls.query(args);
         if (controls.messages) { yield* controls.messages(args); return; }
-        yield { type: 'assistant', message: { id: randomUUID(), content: [{ type: 'text', text: 'CLAUDE RESULT' }] } };
-        yield { type: 'result', subtype: 'success' };
+        // The public SDKAssistantMessage shape of the main agent, joined to its prompt (user_message_uuid / user_message_uuids, sdk.d.ts).
+        const join = typeof args.promptId === 'string' ? { user_message_uuid: args.promptId, user_message_uuids: [args.promptId] } : {};
+        yield { type: 'assistant', session_id: sid, parent_tool_use_id: null, ...join, message: { id: randomUUID(), role: 'assistant', model: 'claude-fixture', content: [{ type: 'text', text: 'CLAUDE RESULT' }] } };
+        yield { type: 'result', subtype: 'success', session_id: sid };
       })(); stream.close = () => {}; return stream;
     } }); return instance; };
   bridge = build();

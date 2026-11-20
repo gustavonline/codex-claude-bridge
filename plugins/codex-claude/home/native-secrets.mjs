@@ -10,8 +10,8 @@ const tokenOk = x => typeof x === 'string' && /^[\x21-\x7e]{1,4096}$/.test(x);
 const keychainHelper = fileURLToPath(new URL('./os-secret.py', import.meta.url));
 const exact = (x, keys) => x && typeof x === 'object' && !Array.isArray(x) && Object.keys(x).sort().join() === keys.sort().join();
 export class NativeSecrets {
-  constructor(root, { platform = process.platform, python = process.env.BRIDGE_PYTHON ?? (process.platform === 'darwin' ? '/usr/bin/python3' : undefined), run = execFileSync } = {}) {
-    Object.assign(this, { root, platform, python, run });
+  constructor(root, { platform = process.platform, python = process.env.BRIDGE_PYTHON ?? (process.platform === 'darwin' ? '/usr/bin/python3' : undefined), run = execFileSync, probe = lstatSync } = {}) {
+    Object.assign(this, { root, platform, python, run, probe });
     this.service = 'online.gustav.model-bridge.' + createHash('sha256').update(root).digest('hex');
   }
   guard() {
@@ -22,7 +22,7 @@ export class NativeSecrets {
     try {
       const p = this.platform === 'linux' ? '/usr/bin/secret-tool' : this.platform === 'darwin' ? this.python : null;
       if (!p || !isAbsolute(p)) return false;
-      const s = lstatSync(p); return s.isFile() && (s.mode & 0o111) !== 0 && (s.mode & 0o022) === 0;
+      const s = this.probe(p); return s.isFile() && (s.mode & 0o111) !== 0 && (s.mode & 0o022) === 0;
     } catch { return false; }
   }
   records() {

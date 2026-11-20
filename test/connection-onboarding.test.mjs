@@ -19,9 +19,11 @@ function response(body, status = 200) {
     }); }; return req;
   } };
 }
+// The helper the store would launch, as a regular root-style executable: the injected run() stands in for it, so the test does not depend on the host's binaries.
+const helperFile = () => ({ isFile: () => true, mode: 0o100755 });
 function nativeStorage() {
   const root = temp(), data = new Map(), calls = [];
-  const store = new NativeSecrets(root, { platform: 'linux', run: (exe, args, options) => {
+  const store = new NativeSecrets(root, { platform: 'linux', probe: helperFile, run: (exe, args, options) => {
     assert.equal(exe, '/usr/bin/secret-tool'); assert.ok(!args.some(v => String(v).includes('SYNTHETIC-KEY')));
     const key = args.slice(args.indexOf('service')).join('|'); calls.push({ exe, args });
     if (args[0] === 'store') { assert.ok(!data.has(key)); data.set(key, options.input.toString()); return ''; }
@@ -114,7 +116,7 @@ test('catalog auth, rate limiting and unsupported bodies mark stale and retain p
 
 test('native macOS launcher uses isolated system-Python flags and keeps the component helper bytes unchanged', () => {
   const root=temp(), calls=[];
-  const store=new NativeSecrets(root,{platform:'darwin',python:'/usr/bin/true',run:(exe,args,options)=>{calls.push({exe,args});assert.equal(options.input.toString(),'SYNTHETIC-KEY-NOT-REAL');return '';}});
+  const store=new NativeSecrets(root,{platform:'darwin',python:'/usr/bin/true',probe:helperFile,run:(exe,args,options)=>{calls.push({exe,args});assert.equal(options.input.toString(),'SYNTHETIC-KEY-NOT-REAL');return '';}});
   store.enroll(openRouterBase,'SYNTHETIC-KEY-NOT-REAL');assert.equal(calls[0].exe,'/usr/bin/true');assert.deepEqual(calls[0].args.slice(0,2),['-I','-B']);
   assert.ok(calls[0].args[2].endsWith('/os-secret.py'));assert.ok(!JSON.stringify(calls).includes('SYNTHETIC-KEY'));
   assert.equal(createHash('sha256').update(readFileSync(new URL('../plugins/codex-claude/home/os-secret.py',import.meta.url))).digest('hex'),'ad43f136657a309b8925fcc15eb4343e1855a2ed2896299214cffd9370f8e57d');

@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fixture } from './support/fixture.mjs';
 import { receiptPath, sessionNamespace } from '../sessions.mjs';
+import { historyNamespace } from '../history-read.mjs';
 
 // Synthetic app-server protocol proof for primary mode. No desktop, model or
 // Claude runtime is involved; this is not Mac or GUI acceptance.
@@ -47,7 +48,8 @@ test('isolated mode still passes a GPT thread start through unchanged', async ()
   const f = fixture();
   try {
     const id = await gpt(f, { dynamicTools: [{ type: 'function', name: 'desktop_tool', description: 'x', inputSchema: { type: 'object' } }] });
-    assert.deepEqual(starts(f)[0].params.dynamicTools.map(t => t.name), ['desktop_tool']);
+    // Unchanged apart from the read-only history namespace every new native thread receives (bridge.mjs thread/start).
+    assert.deepEqual(starts(f)[0].params.dynamicTools.map(t => t.name), ['desktop_tool', historyNamespace]);
     assert.equal(f.bridge.records.has(id), false);
     assert.equal(f.bridge.nativeCallers.size, 0);
     assert.equal((await tool(f, id, 'read', { operation: 'list' })).error, 'Session tool call does not belong to the active turn');
@@ -61,7 +63,7 @@ test('primary GPT chats stay native and GPT-default, and only gain the session t
     const [start] = starts(f);
     assert.equal(start.params.model, undefined, 'the configured GPT default is not replaced');
     assert.equal(start.params.modelProvider, undefined);
-    assert.deepEqual(start.params.dynamicTools.map(t => t.name), ['desktop_tool', sessionNamespace]);
+    assert.deepEqual(start.params.dynamicTools.map(t => t.name), ['desktop_tool', sessionNamespace, historyNamespace]);
     assert.equal(f.bridge.records.has(id), false, 'the native host keeps owning the GPT chat');
     assert.equal(f.hosts.get(id).settings.model, 'gpt-test');
     const sent = await f.bridge.request('turn/start', { threadId: id, input: [{ type: 'text', text: 'native' }] });
