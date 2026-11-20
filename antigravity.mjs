@@ -5,6 +5,7 @@
 // The catalog is what the signed-in account's session reports; nothing is added. Linux only: elsewhere `open` refuses before starting anything.
 import { createServer } from 'node:http';
 import { join } from 'node:path';
+import { realpathSync } from 'node:fs';
 import { sandboxAvailable, sandboxRunDir, startSandboxed } from './harness-sandbox.mjs';
 import { antigravityLaunch } from './plugins/codex-claude/home/harnesses.mjs';
 
@@ -59,10 +60,11 @@ export function acpClient(child, { onRequest, onNotification, maxLine = 8 * 1024
 // Opens one Antigravity session. `mcpHandler(req, res)` serves Bridge's Codex MCP tools over HTTP; `codexTools` are their names; `onEvent`
 // receives { type: 'text', text } | { type: 'tool', id, title, status } | { type: 'permission', title, allowed }. `start` is injectable for tests.
 export async function open({ executable, cwd, home, agentName, mcpHandler, codexTools, onEvent = () => {}, env = process.env, start = startSandboxed, available = sandboxAvailable }) {
-  if (!available()) fail('harness_boundary_unavailable', 'Antigravity needs Model Bridge\'s process sandbox, which is not available on this system, so nothing was started.');
+  if (!(await available())) fail('harness_boundary_unavailable', 'Antigravity needs Model Bridge\'s process sandbox, which is not available on this system, so nothing was started.');
   const runDir = sandboxRunDir(), mcpSocket = join(runDir, 'mcp.sock'), http = createServer(mcpHandler);
   await new Promise((resolve, reject) => { http.once('error', reject); http.listen(mcpSocket, resolve); });
-  const spec = antigravityLaunch({ executable, logDir: runDir, env });
+  // The real install path: the sandbox mounts the runtime's own directory, so a symlinked `agy` is resolved first.
+  const spec = antigravityLaunch({ executable: realpathSync(executable), logDir: runDir, env });
   let box;
   try { box = await start({ command: spec.command, args: [...spec.args, '--agent', agentName], cwd, env: { ...spec.env, TMPDIR: '/tmp' }, writable: [join(home, '.gemini')], allow: googleEndpoints, mcpSocket, runDir }); }
   catch (error) { http.close(); throw error; }
@@ -94,7 +96,11 @@ export async function open({ executable, cwd, home, agentName, mcpHandler, codex
         if (model != null) { if (!catalog.models.some(m => m.id === model)) fail('model_not_available', 'That model is not offered by this Antigravity account.'); await acp.request('session/set_config_option', { sessionId, configId: 'model', value: model }); }
         if (level != null) { if (!catalog.levels.includes(level)) fail('unsupported_reasoning_effort', 'That thinking level is not offered for this model.'); await acp.request('session/set_config_option', { sessionId, configId: 'thought_level', value: level }); }
       },
-      prompt: text => acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }, 30 * 60_000),
+      // A prompt that outlives its bound is cancelled in the agent too, not only abandoned here.
+      prompt: async (text, { timeoutMs = 30 * 60_000 } = {}) => {
+        try { return await acp.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }, timeoutMs); }
+        catch (error) { if (error.code === 'harness_timeout') acp.notify('session/cancel', { sessionId }); throw error; }
+      },
       cancel: () => acp.notify('session/cancel', { sessionId }),
       close,
     };

@@ -36,7 +36,7 @@ function harness() {
   const seen = () => calls.stderr.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
   return { calls, start, seen };
 }
-const base = h => ({ executable: '/opt/agy', cwd: mkdtempSync(join(tmpdir(), 'bridge-agy-')), home: '/home/someone', agentName: 'bridge-mcp-abc', mcpHandler: (_q, r) => r.end(), codexTools: new Set(['find_tools', 'call_tool']), start: h.start, available: () => true });
+const base = h => ({ executable: process.execPath, cwd: mkdtempSync(join(tmpdir(), 'bridge-agy-')), home: '/home/someone', agentName: 'bridge-mcp-abc', mcpHandler: (_q, r) => r.end(), codexTools: new Set(['find_tools', 'call_tool']), start: h.start, available: () => true });
 
 test('without the process boundary nothing is started and the refusal says why', async () => {
   let started = false;
@@ -71,6 +71,12 @@ test('cancel ends the running prompt as cancelled, and close ends the harness', 
   const h = harness(), events = [], s = await open({ ...base(h), onEvent: e => events.push(e) });
   const running = s.prompt('count'); while (!events.some(e => e.type === 'text')) await new Promise(r => setTimeout(r, 5));
   s.cancel(); assert.deepEqual(await running, { stopReason: 'cancelled' }); await s.close(); assert.equal(h.calls.closed, true);
+});
+
+test('a prompt that outlives its bound is cancelled in the agent, not only abandoned', async () => {
+  const h = harness(), s = await open(base(h));
+  await assert.rejects(s.prompt('count', { timeoutMs: 100 }), { code: 'harness_timeout' });
+  await new Promise(r => setTimeout(r, 50)); assert.ok(h.seen().some(m => m.got === 'session/cancel'), 'session/cancel was sent'); await s.close();
 });
 
 test('the permission answer and catalog parsing are total over odd input; the agent definition grants no native tool', () => {

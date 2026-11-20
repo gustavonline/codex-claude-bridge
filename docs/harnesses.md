@@ -63,6 +63,6 @@ Not measured: the macOS desktop, Codex MCP tool calls, long histories, and T3 Co
 
 ## Known limits
 
-- Antigravity was qualified signed-in on 20 November and refused; see [the qualification](antigravity-qualification.md). An MCP-only session is possible natively, but a workspace's own hooks run outside Codex's sandbox. Gemini Neon is not in this account's server catalog.
+- Antigravity was qualified signed in on 20 November and refused, because a workspace's own hooks run outside Codex's sandbox. A Linux whole-process boundary and an MCP-only adapter now exist and are measured live; see [the qualification](antigravity-qualification.md). The adapter is not yet wired into chats, and macOS has no boundary. Gemini Neon is not in this account's server catalog, which matches the owner-reported free plan.
 - `antigravityLaunch()` prepares the Google-account route. It turns auto-update off, forces file credential storage, moves only the server log, drops every ambient `GEMINI_*`, `GOOGLE_*`, `CLOUDSDK_*`, `AGY_*` and Vertex variable, and does not pass `--sandbox`. It does not isolate the profile: on 1.5.13 the login and state stay under `$HOME/.gemini`, and `GEMINI_HOME` moves nothing. An own profile would need `--gemini-dir` and its own sign-in. Nothing calls this function.
 - Native Mac desktop behaviour after these changes needs the desktop owner's run.

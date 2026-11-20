@@ -39,6 +39,28 @@ Codex workspaces are routinely written by the model through Codex's own shell. A
 
 The minimum boundary is therefore OS containment of agy's whole process tree. It must match the thread's file permissions, keep agy's state directory writable, and allow network only for Google's endpoints. Codex's built-in profiles block all network, and a profile that allows agy's network would also give its hooks network. That boundary has not been built or proven, so Model Bridge keeps Antigravity off and says why in Home.
 
+## Linux whole-process boundary (built after this qualification)
+
+`harness-sandbox.mjs` runs agy in bubblewrap. It mounts only an allowlist:
+- `/usr`, `/etc` and their links, agy's own install directory, Node and the relay, all read-only;
+- the workspace, read-only;
+- agy's own state (`~/.gemini`), writable;
+- a private `/tmp`.
+
+The sandbox root is remounted read-only. There is no network but a Bridge proxy that admits CONNECT to `daily-cloudcode-pa.googleapis.com` and `oauth2.googleapis.com` only, and Bridge's MCP endpoint. A private PID namespace ends every child with the sandbox.
+
+Re-measured with the existing login (`scripts/live-antigravity.mjs`, and `qualify-antigravity.mjs` with `PROBE_SANDBOX=1` and a hostile `SessionStart` hook):
+- The hook ran. It could not write the workspace. It could not reach `example.com`, the host's Docker socket, another tool's credential directory or `/run`.
+- agy itself signed in, listed this account's models, made the Bridge MCP call, cancelled within 8 ms and was torn down with nothing left.
+- agy also tried `www.googleapis.com` and `aicode.googleapis.com`. Both were refused without breaking a turn.
+
+An earlier version bound the whole root read-only. A review measured that host Unix sockets stayed reachable, so the mount set is now an allowlist. Tests now check that host sockets and foreign credential files are unreachable.
+
+Still not done:
+- the adapter (`antigravity.mjs`) is not wired into chat routing;
+- the macOS boundary does not exist, so Antigravity is refused there;
+- approval mapping per Codex sandbox and approval combination is not tested.
+
 ## What would change this
 
 - An official agy option that disables workspace hooks and other executable customizations for a session, verified natively.

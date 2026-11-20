@@ -1,23 +1,38 @@
 // Whole-process boundary for an agent harness that runs its own tools (Linux: bubblewrap). Everything the harness and anything it starts
 // (its shell, hooks, plugins, MCP children) can do is bounded by the OS, not by the harness's own permission prompts:
-//  - the filesystem is read-only, the workspace included; only the harness's own state directories and a private /tmp are writable;
+//  - only an allowlist is mounted: the system directories (/usr, /etc and their links), the harness's own runtime, the workspace (read-only)
+//    and its own state (writable), plus a private /tmp. Nothing from /run, /var, /srv, other homes or credential stores is visible, so no
+//    host Unix socket (a container daemon, a session bus, another tool's credentials) can be reached;
 //  - there is no network: the process sees loopback only. Outbound HTTPS leaves through a Bridge-side CONNECT proxy that admits exact
 //    host:443 pairs (the provider's own endpoints), and Bridge's MCP endpoint is reachable on loopback. Both are relayed over Unix sockets;
 //  - it has its own PID namespace, so every child it started dies with it, and closing stdin or killing the sandbox ends the whole tree.
 // macOS has no bubblewrap: this boundary is Linux-only, and a harness that needs it is refused elsewhere.
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { createServer, connect } from 'node:net';
-import { mkdtempSync, rmSync, accessSync, constants } from 'node:fs';
+import { mkdtempSync, rmSync, accessSync, constants, lstatSync, readlinkSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, isAbsolute } from 'node:path';
+import { join, isAbsolute, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const relay = fileURLToPath(new URL('./harness-relay.mjs', import.meta.url));
 export const bwrapPath = '/usr/bin/bwrap';
+// Whether the boundary works here: probed once per process (asynchronously, bounded), then remembered.
+let probed = null;
 export function sandboxAvailable({ platform = process.platform, path = bwrapPath } = {}) {
-  if (platform !== 'linux') return false;
-  try { accessSync(path, constants.X_OK); execFileSync(path, ['--ro-bind', '/', '/', '--unshare-net', '--unshare-pid', '--die-with-parent', '--', '/bin/true'], { stdio: 'ignore', timeout: 5000 }); return true; }
-  catch { return false; }
+  if (platform !== 'linux') return Promise.resolve(false);
+  return probed ??= new Promise(resolve => {
+    try { accessSync(path, constants.X_OK); } catch { resolve(false); return; }
+    execFile(path, [...systemMounts(), '--unshare-net', '--unshare-pid', '--die-with-parent', '--', '/usr/bin/true'], { timeout: 5000 }, error => resolve(!error));
+  });
+}
+// The system part of the allowlist: /usr and /etc read-only, and the usual top-level links into /usr (merged-usr layouts) as links.
+export function systemMounts({ exists = existsSync, lstat = lstatSync, readlink = readlinkSync } = {}) {
+  const args = ['--ro-bind', '/usr', '/usr', '--ro-bind', '/etc', '/etc'];
+  for (const top of ['/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32']) {
+    if (!exists(top)) continue;
+    args.push(...(lstat(top).isSymbolicLink() ? ['--symlink', readlink(top), top] : ['--ro-bind', top, top]));
+  }
+  return args;
 }
 
 // An HTTPS CONNECT proxy on a Unix socket that admits only `allow` (exact "host:443" strings) and reports every decision (host only, never data).
@@ -60,15 +75,17 @@ export function allowlistProxy(socketPath, allow, { onDecision = () => {}, conne
   return new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, () => resolve(server)); });
 }
 
-// The bubblewrap argument list. `writable` are the harness's own state directories (absolute, created by the caller); nothing else is writable.
-export function bwrapArgs({ writable = [], runDir, cwd, env }) {
-  for (const p of [...writable, runDir, cwd]) if (!isAbsolute(p ?? '')) throw Object.assign(new Error('Sandbox paths must be absolute'), { code: 'sandbox_invalid' });
+// The bubblewrap argument list. `readable` are extra read-only paths the harness needs (its own runtime, the relay); `writable` are its own state
+// directories (absolute, created by the caller). Nothing else exists inside.
+export function bwrapArgs({ readable = [], writable = [], runDir, cwd, env, system = systemMounts() }) {
+  for (const p of [...readable, ...writable, runDir, cwd]) if (!isAbsolute(p ?? '')) throw Object.assign(new Error('Sandbox paths must be absolute'), { code: 'sandbox_invalid' });
   // A writable directory that contains the workspace would make the workspace writable again: refused.
   const inside = (dir, path) => path === dir || path.startsWith(dir.endsWith('/') ? dir : dir + '/');
   if ([...writable, runDir].some(dir => inside(dir, cwd))) throw Object.assign(new Error('A writable sandbox directory may not contain the workspace'), { code: 'sandbox_invalid' });
   // The private /tmp is mounted first; the workspace (read-only) and the writable directories are bound after it, so a path under /tmp stays visible.
-  return ['--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', '--ro-bind', cwd, cwd,
+  return [...system, '--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', ...readable.flatMap(p => ['--ro-bind', p, p]), '--ro-bind', cwd, cwd,
     ...writable.flatMap(p => ['--bind', p, p]), '--bind', runDir, runDir,
+    '--remount-ro', '/', // the sandbox's own root (where mount points were created) is read-only too: only /tmp, the state and the run dir are writable
     '--unshare-net', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--new-session', '--die-with-parent', '--clearenv',
     ...Object.entries(env).flatMap(([k, v]) => ['--setenv', k, String(v)]), '--chdir', cwd];
 }
@@ -78,7 +95,7 @@ export const sandboxRunDir = () => mkdtempSync(join(tmpdir(), 'bridge-sbx-'));
 const socketOk = path => Buffer.byteLength(path) <= 100;
 // Starts `command args` inside the boundary. `allow` are the CONNECT targets; `mcpSocket`, when given, is exposed inside as http://127.0.0.1:<port>.
 // Returns the child (stdio piped, for ACP), the inner MCP port, the proxy decisions, and close() that ends the whole tree and removes the run dir.
-export async function startSandboxed({ command, args, cwd, env = {}, writable = [], allow = [], mcpSocket = null, runDir = null, upstream = upstreamProxy(), bwrap = bwrapPath, node = process.execPath }) {
+export async function startSandboxed({ command, args, cwd, env = {}, readable = [], writable = [], allow = [], mcpSocket = null, runDir = null, upstream = upstreamProxy(), bwrap = bwrapPath, node = process.execPath }) {
   runDir ??= sandboxRunDir(); const proxySocket = join(runDir, 'proxy.sock'), decisions = [];
   if (!socketOk(proxySocket) || (mcpSocket && !socketOk(mcpSocket))) throw Object.assign(new Error('The sandbox run directory path is too long for its sockets'), { code: 'sandbox_invalid' });
   const proxy = await allowlistProxy(proxySocket, allow, { onDecision: d => decisions.push(d), upstream });
@@ -86,7 +103,12 @@ export async function startSandboxed({ command, args, cwd, env = {}, writable = 
   const inner = { ...env, HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`, https_proxy: `http://127.0.0.1:${proxyPort}`, HTTP_PROXY: `http://127.0.0.1:${proxyPort}`, http_proxy: `http://127.0.0.1:${proxyPort}`, NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' };
   const forwards = [`${proxyPort}=${proxySocket}`, ...(mcpSocket ? [`${mcpPort}=${mcpSocket}`] : [])];
   if (mcpSocket && !mcpSocket.startsWith(runDir + '/')) throw Object.assign(new Error('The MCP socket must live in the sandbox run directory'), { code: 'sandbox_invalid' });
-  const child = spawn(bwrap, [...bwrapArgs({ writable, runDir, cwd, env: inner }), '--', node, relay, ...forwards, '--', command, ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+  // Inside, besides the system: the harness's own runtime directory, Node and the relay (read-only).
+  const inside = [...new Set([dirname(command), dirname(node), relay, ...readable])];
+  const child = spawn(bwrap, [...bwrapArgs({ readable: inside, writable, runDir, cwd, env: inner }), '--', node, relay, ...forwards, '--', command, ...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+  // stderr is drained into a bounded tail (an undrained pipe would stall the harness), and a failed spawn ends like an exit.
+  let stderrTail = ''; child.stderr.on('data', b => { stderrTail = (stderrTail + b).slice(-4000); });
+  child.on('error', () => { if (child.exitCode === null) child.emit('exit', 127, null); });
   let closed = null;
   const close = () => closed ??= (async () => {
     child.stdin.end();
@@ -95,5 +117,5 @@ export async function startSandboxed({ command, args, cwd, env = {}, writable = 
     proxy.close(); rmSync(runDir, { recursive: true, force: true });
     return { state: gone ? 'exited' : 'killed' };
   })();
-  return { child, runDir, mcpUrl: mcpSocket ? `http://127.0.0.1:${mcpPort}/mcp` : null, decisions, close };
+  return { child, runDir, mcpUrl: mcpSocket ? `http://127.0.0.1:${mcpPort}/mcp` : null, decisions, close, stderr: () => stderrTail };
 }
