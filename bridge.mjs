@@ -1140,8 +1140,8 @@ export class Bridge {
   async request(method, params = {}, internal = {}) {
     // A route to a harness that does not execute here is refused before any router, host or SDK sees it (see harnesses.mjs).
     if (['thread/start', 'thread/resume', 'thread/fork', 'thread/settings/update', 'turn/start'].includes(method)) {
-      const asked = params.collaborationMode?.settings?.model ?? params.model;
-      if (isHarnessModel(asked)) throw new RpcError(harnessRefusal(parseHarnessModelId(asked) ?? { harness: null }).message, -32602);
+      const asked = [params.collaborationMode?.settings?.model, params.model].find(isHarnessModel);
+      if (asked !== undefined) throw new RpcError(harnessRefusal(parseHarnessModelId(asked) ?? { harness: null }).message, -32602);
     }
     if (this.localResponses && !internal.localRouted)
       return this.localResponses.request(method, params, (m, p) => this.request(m, p, { ...internal, localRouted: true }));
@@ -1536,6 +1536,14 @@ export class Bridge {
     }
     if (record.archived) throw new RpcError('Unarchive this chat before starting another turn.', -32602);
     if (this.changing.has(record.thread.id) || this.reverting.has(record.thread.id) || this.pendingSteers.has(record.thread.id)) throw new RpcError('Wait for the current chat change to finish');
+    // A turn that has ended but whose Claude child is still exiting (about 2 s after Stop) is waited for, not refused: the new message
+    // starts once the previous process is gone. Bounded by that turn's own exit bound; anything still running after it is refused as before.
+    const closing = this.active.get(record.thread.id);
+    if (closing?.closing && !closing.waited && !this.starting.has(record.thread.id)) {
+      closing.waited = true; let timer; // one bounded wait per closing turn (its exit bound is 7 s); then the usual refusal applies
+      await Promise.race([closing.released, new Promise(r => { timer = setTimeout(r, 10_000); })]); clearTimeout(timer);
+      return this.begin(record, params, internal);
+    }
     if (this.active.has(record.thread.id) || this.starting.has(record.thread.id)) throw new RpcError('A turn is already running. Queue the message or interrupt before starting another.', -32602);
     this.starting.add(record.thread.id);
     if (this.log('turn.preparing', { threadId: record.thread.id, queuedSubmissionId: params.queuedSubmissionId }) === false) {
@@ -1754,6 +1762,7 @@ export class Bridge {
           this.save(record);
         } }
       running.acceptingSteering = false; running.steeringInput.close();
+      let release; running.released = new Promise(r => { release = r; }); running.closing = true;
       try { running.query?.close(); await running.mcp?.instance.close(); }
       catch (error) { this.log('turn.cleanup_failed', { threadId, turnId: turn.id, ...errorMetadata(error) }); }
       // The query's own child must be gone before the chat is released: the next turn, a queued one or an immediate resend resumes the SAME
@@ -1776,6 +1785,7 @@ export class Bridge {
       this.log('turn.finished', { threadId, turnId: turn.id, status: turn.status, durationMs: turn.durationMs });
       this.emit('turn/completed', { threadId, turn: envelope(turn) });
       this.emit('thread/status/changed', { threadId, status: { type: 'idle' } });
+      release();
       continueQueue(this, record, turn.status);
     }
   }

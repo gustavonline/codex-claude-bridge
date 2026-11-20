@@ -6,7 +6,7 @@ Model Bridge sits beneath the unmodified Codex desktop. A **harness** is the run
 | --- | --- | --- | --- |
 | Codex | Codex app-server (native) | Yes | Native; Bridge does not change it. |
 | Claude Code | `@anthropic-ai/claude-agent-sdk` 0.3.325 | Yes | No native tools: every action goes through the Codex MCP tools, so Codex's sandbox and approvals apply. |
-| Custom Responses endpoints | Codex app-server with a Bridge provider | Yes | Native Codex execution against the saved endpoint. |
+| Custom Responses endpoints | Codex app-server with a Bridge provider | Yes, in the isolated preview | Native Codex execution against the saved endpoint; see the README for the preview's limits. |
 | Gemini (Antigravity) | ACP, `agy acp` (1.5.0 or newer) | No | A workspace's own Antigravity hooks run commands outside the Codex sandbox, without asking, at every session start and model call. See [the qualification](antigravity-qualification.md). |
 | Cursor | `@cursor/sdk` | No | The SDK reports no command or file approval support. |
 | Muse Code | `@muse-code/sdk` | No | Not qualified. |
@@ -15,39 +15,51 @@ Model Bridge sits beneath the unmodified Codex desktop. A **harness** is the run
 | Pi | Pi RPC | No | Not qualified. |
 | OpenCode | `@opencode-ai/sdk` over HTTP | No | Runs its own tools and server; not qualified. |
 
-The non-running routes are the ones pinned T3 Code (`pingdotgg/t3code` `df09ced`, MIT) uses. Home lists them under **Connect more** with what is actually known:
+The non-running routes are the ones pinned T3 Code (`pingdotgg/t3code` `df09ced`, MIT) uses. The connection manager Home (the provider-bound Home; the default diagnostic Home has no connection list) shows them under **Connect more**, each with what is actually known:
 
-- whether the runtime was found on `PATH`. It is never run, so a found runtime is not "ready".
-- that sign-in and models are unknown;
-- that execution is not qualified, and why.
+- whether the runtime was found on `PATH` or in the usual install folders, and its minimum version. It is never run, so a found runtime is not "ready".
+- that sign-in and models are not checked;
+- that it is not available in Bridge, and why.
 
 Home offers no action for them, and Bridge never puts them in the model picker.
 
 ## Route identity
 
-A route is *(harness, connection, model)*. A model of a non-native harness is always named `bridge-harness/<harness>/<connection>/<model>`. Antigravity, for example, can serve `claude-*` and GPT models. Under this naming those models can never be taken for Claude Code or Codex models. Bare Claude names (`opus`, `sonnet`, `haiku`, `claude-*`) keep resolving to Claude Code for existing chats. Bridge refuses a `bridge-harness/…` model on every model-carrying request before any host or SDK sees it.
+A route is *(harness, connection, model)*. A model of a non-native harness is always named `bridge-harness/<harness>/<connection>/<model>`. Antigravity, for example, can serve `claude-*` and GPT models. Under this naming those models can never be taken for Claude Code or Codex models.
+
+`thread/start`, `thread/resume`, `thread/fork`, `thread/settings/update` and `turn/start` refuse a `bridge-harness/…` model before any host or SDK sees it. The check covers both `model` and the collaboration mode's model, and the prefix in any letter case.
+
+Today this is a reserved namespace plus that refusal. Execution still chooses Codex or Claude Code by model family, and bare Claude names (`opus`, `sonnet`, `haiku`, `claude-*`) keep resolving to Claude Code. `routeOf()` is the resolver the first executing third harness has to route through. That still needs the adapter refactor the architecture reviews asked for.
 
 ## Claude Code lifecycle
 
 - Each turn's SDK query spawns its CLI through the SDK's public `spawnClaudeCodeProcess` hook, so Bridge owns the process.
-- A chat is released only after that process has exited. Bridge waits 5 s, then kills the process and waits again. This applies to the next queued turn, an immediate resend after Stop, and the history checkpoint. None of them overlaps the previous process on the same session.
-- Stop now completes when the process has exited. Measured live, that takes about 1.9–2.0 s mid-stream: the SDK's own graceful close, stdin end, then SIGTERM after about 2 s. Bridge keeps this window so the CLI finishes writing the session that the next turn resumes. Until then the chat refuses a new message as still running.
-- A failed CLI's last stderr lines (bounded) are appended to the turn error, as the SDK does for its own spawn.
-- A CLI that sends no first message within 60 s (`BRIDGE_CLAUDE_BOOT_MS`) fails the turn with a clear error instead of holding it. The model-list probe has the same bound.
+- A chat is released only after that process has exited. Bridge waits 5 s, then kills the process and waits up to 2 s more. That covers the next queued turn, an immediate resend after Stop, and the history checkpoint, so none of them overlaps the previous process on the same session. The exception is a child that is still not confirmed gone after the kill: Bridge logs `turn.child_exit unconfirmed` and continues.
+- Stop completes when the process has exited. Measured live, that takes 1.9–2.1 s mid-stream (four samples). It is the SDK's own graceful close: stdin ends, then SIGTERM after about 2 s. Bridge keeps this window so the CLI finishes writing the session that the next turn resumes.
+- A message sent during that window waits for the stopped turn to finish and then starts. It is not refused. The wait is bounded at 10 s, after which the usual "already running" refusal applies. Whether the unmodified desktop shows this wait well is not yet observed on a Mac.
+- A failed CLI's last stderr lines (bounded) are appended to the turn error, as the SDK does for its own spawn. Bridge reads them after the stream has closed, waiting at most 0.5 s.
+- A CLI that sends no first message within 60 s (`BRIDGE_CLAUDE_BOOT_MS`) fails the turn with a clear error instead of holding it. The model-list probe has the same bound. Its child is reaped in the background, and the list is not held until it exits.
 - Bridge keeps one query per turn and does not keep live queries between turns. The measurements below show why.
 
 ## Measurements (Linux VM, not desktop)
 
-`scripts/benchmark-claude.mjs --run` measures live inference. It uses Claude Code 2.1.306, Haiku, no tools, and an identical prompt and settings in both modes. Each mode's first turn starts a fresh child (cold); later turns are warm. Times are in milliseconds from the moment the turn is asked.
+`scripts/benchmark-claude.mjs --run --rounds 4` measures live inference. It uses Claude Code 2.1.306, Haiku, SDK 0.3.325 (as shipped), no tools, and an identical prompt and settings in both modes. Each mode's first turn starts a fresh child (cold); the other three are warm. Times are in milliseconds from the moment the turn is asked.
 
-| SDK | Mode | Init (cold / warm) | First text (cold / warm) | Process tree RSS |
-| --- | --- | --- | --- | --- |
-| 0.3.296 | Query per turn (Bridge) | 872 / 661–666 | 2466 / 2164–2863 | ≈266 MiB while a turn runs, 0 between turns |
-| 0.3.296 | Persistent live query (T3 pattern) | 671 / 10–16 | 2489 / 1592–1614 | 233 MiB idle per kept chat, 260 MiB peak |
-| 0.3.325 | Query per turn | 917 / 690–746 | 2443 / 2197–2406 | ≈265 MiB while a turn runs |
-| 0.3.325 | Persistent live query | 636 / 10–15 | 2362 / 2384–2787 | 234 MiB idle, 260 MiB peak |
+| Mode | Init, cold / warm | First text, cold / warm | Process tree RSS |
+| --- | --- | --- | --- |
+| Query per turn (Bridge) | 932 / 612–642 | 2411 / 2089–2318 | about 265 MiB while a turn runs, none between turns |
+| Persistent live query (T3 pattern) | 590 / 12–21 | 2272 / 1901–1935 | 233 MiB idle per kept chat, 310 MiB peak |
 
-A persistent query avoids about 0.65–0.9 s of CLI start per warm turn. Model latency is noisy and often larger than that saving. Each kept chat costs about 233 MiB while idle. Reusing a query would also need the per-turn MCP server and system prompt moved out of the turn, plus a reuse key covering permissions and tools. Not measured: the macOS desktop, Codex MCP tool calls, long histories, and T3 Code itself on the same machine. No parity with T3 is claimed.
+- **Stop to exit, mid-stream:** 1875–2096 ms.
+- **Model list:** 546–558 ms; the probe child then exits 0.4–0.5 s after close. This involves no inference.
+- **Close to exit after a finished turn:** 399–438 ms.
+- **Prompt join on both SDKs:** the `user_message_uuid`/`user_message_uuids` join is present on assistant and `message_start` frames.
+
+Earlier two- and three-round runs, on SDK 0.3.296 and 0.3.325, gave the same picture with more spread. On 0.3.325, one warm persistent-query sample was slower than the per-turn ones.
+
+A persistent query saves about 0.6 s of CLI start per warm turn, and here 0.2–0.4 s of first text. Each kept chat costs about 233 MiB while idle on a 4 GiB VM. Reusing a query would also need the per-turn MCP server and system prompt moved out of the turn, plus a reuse key covering permissions and tools. Bridge therefore keeps one query per turn.
+
+Not measured: the macOS desktop, Codex MCP tool calls, long histories, and T3 Code itself on the same machine. No parity with T3 is claimed.
 
 ## Known limits
 

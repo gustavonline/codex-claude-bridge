@@ -70,7 +70,7 @@ export function harnessStatuses({ find = findExecutable } = {}) {
     signIn: 'unknown', catalog: 'unknown', execution: 'not_qualified', reason: h.reason }));
 }
 // Any model ID in the harness namespace, well formed or not: it never names a Codex or Claude model, so it is never passed on.
-export const isHarnessModel = id => typeof id === 'string' && id.startsWith(harnessPrefix);
+export const isHarnessModel = id => typeof id === 'string' && id.toLowerCase().startsWith(harnessPrefix);
 // The refusal for a harness route that reached execution anyway (a pasted or stale model ID): explicit, before anything is created.
 export function harnessRefusal(route) {
   const h = harness(route.harness);

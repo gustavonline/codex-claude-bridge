@@ -88,12 +88,37 @@ async function live(rounds) {
   send(null); q.close(); const exitMs = await o.stop();
   return { turns, shape, sid, idleTreeRssMiB: idle, peakTreeRssMiB: +(o.peak / 1024).toFixed(1), processes: o.procs, closeToExitMs: exitMs };
 }
+// Stop mid-stream: abort after the first text delta, then time until the owned child has exited (the SDK's graceful close).
+async function stops(rounds) {
+  const out = [];
+  for (let i = 0; i < rounds; i++) {
+    const o = owned(), controller = new AbortController(), uuid = randomUUID();
+    const q = query({ prompt: (async function* () { yield { ...user(uuid), message: { role: 'user', content: [{ type: 'text', text: 'Count from 1 to 300, one number per line, nothing else.' }] } }; })(), options: { ...baseOptions(o), abortController: controller, persistSession: false } });
+    let stoppedAt = null;
+    try { for await (const m of q) if (!stoppedAt && m.type === 'stream_event' && m.event?.type === 'content_block_delta') { stoppedAt = now(); controller.abort(); q.close(); } } catch { /* the aborted stream ends with an abort error */ }
+    const exited = await o.exit; clearInterval(o.timer); out.push({ stopToExitMs: stoppedAt ? Math.round(exited - stoppedAt) : null });
+  }
+  return out;
+}
+// The model list (no prompt, no inference): time to the list, and to the probe child's exit after close.
+async function catalog(rounds) {
+  const out = [];
+  for (let i = 0; i < rounds; i++) {
+    const o = owned(), t0 = now();
+    const q = query({ prompt: (async function* () { await new Promise(() => {}); })(), options: { ...baseOptions(o), persistSession: false } });
+    const list = await q.supportedModels(); const listedMs = Math.round(now() - t0); q.close(); const exited = await o.exit; clearInterval(o.timer);
+    out.push({ models: list.length, listMs: listedMs, closeToExitMs: Math.round(exited - t0 - listedMs) });
+  }
+  return out;
+}
 const rounds = Math.max(2, Number(values.rounds) || 2);
 const report = { sdkVersion, cli: execFileSync(executable, ['--version'], { encoding: 'utf8', env }).trim(), model: values.model, rounds, platform: `${process.platform}-${process.arch}`, node: process.version, measuredAt: new Date().toISOString(),
-  labels: 'live inference; turn 1 of each mode is cold for that mode (fresh child), later turns warm; per-turn = Bridge today, live = persistent query' };
+  labels: 'live inference; `rounds` samples per mode; turn 1 of each mode is cold for that mode (fresh child), later turns warm; per-turn = Bridge today, live = persistent query; stop = abort after first text delta; catalog = supportedModels, no inference' };
 try {
   report.perTurn = await perTurn(rounds);
   report.live = await live(rounds);
+  report.stop = await stops(rounds);
+  report.catalog = await catalog(rounds);
 } finally {
   for (const sid of [report.perTurn?.sid, report.live?.sid]) if (sid) try { await deleteSession(sid, { dir: cwd }); } catch { /* the store keeps it; harmless synthetic text */ }
   rmSync(cwd, { recursive: true, force: true });

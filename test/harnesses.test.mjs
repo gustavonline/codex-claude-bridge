@@ -53,9 +53,11 @@ test('Home lists each other harness with its real state and reason, offers no ac
   const rows = nodes(h.elements.controls).filter(n => /(^| )harness-row( |$)/.test(n.className));
   assert.ok(list.length >= 9); assert.equal(rows.length, list.length); assert.ok(rows.every(r => !nodes(r).some(n => n.tag === 'button')), 'no action for a harness that does not run here');
   const agy = rows.find(r => nodes(r).some(n => n.tag === 'h3' && n.textContent === 'Gemini (Antigravity)'));
-  assert.match(nodes(agy).map(n => n.textContent).join(' '), /(Needs agy|agy found) · Not available in Bridge yet/); assert.match(h.text('controls'), /hooks run commands outside the Codex sandbox/);
-  const forged = structuredClone(status); forged.controls.harnesses[0].execution = 'qualified';
-  const g = show(forged); assert.equal(nodes(g.elements.controls).some(n => /harness-row/.test(n.className ?? '')), false, 'a claimed qualification is not shown');
+  assert.match(nodes(agy).map(n => n.textContent).join(' '), /(Needs agy|agy found) 1\.5\.0 or newer · Sign-in and models not checked · Not available in Bridge yet/); assert.match(h.text('controls'), /hooks run commands outside the Codex sandbox/);
+  for (const [field, value] of [['execution', 'qualified'], ['signIn', 'signed_in'], ['catalog', 'fresh']]) {
+    const forged = structuredClone(status); forged.controls.harnesses[0][field] = value;
+    const g = show(forged); assert.equal(nodes(g.elements.controls).some(n => /harness-row/.test(n.className ?? '')), false, `a claimed ${field} is not shown`);
+  }
 });
 
 test('the prepared Antigravity launch pins the Google-account route to its own profile and log, and drops every ambient Gemini, Google, ADC or other provider override', () => {
@@ -73,6 +75,10 @@ test('every ID the builder makes parses back, and a malformed harness-namespace 
     const n = f.calls.length;
     await assert.rejects(f.bridge.request('thread/start', { model: 'bridge-harness/antigravity/c/not=base64' }), e => e.code === -32602 && /not available in Model Bridge yet/.test(e.message));
     assert.equal(f.calls.length, n);
+    // every model field is checked, whichever the router would prefer, and the prefix in any case
+    for (const params of [{ model: 'bridge-harness/antigravity/g1/eA', collaborationMode: { mode: 'default', settings: { model: 'gpt-test' } } }, { model: 'gpt-test', collaborationMode: { mode: 'default', settings: { model: 'bridge-harness/antigravity/g1/eA' } } }, { model: 'Bridge-Harness/antigravity/g1/eA' }])
+      await assert.rejects(f.bridge.request('thread/start', params), e => e.code === -32602 && /not available in Model Bridge yet/.test(e.message), JSON.stringify(params));
+    assert.equal(f.calls.length, n, 'none reached native');
   } finally { f.close(); }
 });
 
