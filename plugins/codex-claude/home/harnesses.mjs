@@ -77,12 +77,15 @@ export function harnessRefusal(route) {
   return Object.assign(new Error(`${h ? h.label : 'This harness'} is not available in Model Bridge yet, so nothing was sent. ${h?.reason ?? ''}`.trim()), { code: 'harness_not_qualified' });
 }
 
-// Prepared launch for Antigravity's official ACP server (flags of `agy acp --help`, 1.5.x), used once its tool boundary is qualified. The
-// subscription route signs in with the Google account (oauth-personal) in its OWN app-data directory, and ambient Gemini/Google/ADC variables
-// are removed so a parent shell can never switch it to API-key or Vertex billing. Nothing here runs agy.
+// Prepared launch for Antigravity's official ACP server (`agy acp`, flags verified on 1.5.13), used once its tool boundary is qualified.
+// The Google-account route (oauth-personal) uses its OWN profile through GEMINI_HOME, the isolation the installed runtime's login uses; ambient
+// Gemini/Google/ADC and other provider variables are removed so a parent shell can never switch it to API-key or Agent Platform billing.
+// Measured on 1.5.13: even with GEMINI_HOME and an absolute --app-data-dir, the server log goes to $HOME/.gemini/tmp/…, so the log is pinned
+// inside the profile. `--sandbox` is NOT passed: it can silently do nothing, and it is no substitute for a boundary matching Codex permissions.
 const googleOverride = /^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|VERTEX|ANTIGRAVITY_)/;
-export function antigravityLaunch({ executable, appDataDir, env = process.env }) {
-  if (!isAbsolute(executable ?? '') || !isAbsolute(appDataDir ?? '')) throw Object.assign(new Error('Antigravity needs an absolute executable and app-data path'), { code: 'route_invalid' });
-  return { command: executable, args: ['acp', '--app-data-dir', appDataDir, '--disable-telemetry', '--sandbox'], authMethod: 'oauth-personal',
-    env: Object.fromEntries(Object.entries(env).filter(([key]) => !googleOverride.test(key) && !/^(OPENAI_|ANTHROPIC_|CODEX_|BRIDGE_|CLAUDE_CODE_)/.test(key))) };
+export function antigravityLaunch({ executable, profileDir, env = process.env }) {
+  if (!isAbsolute(executable ?? '') || !isAbsolute(profileDir ?? '')) throw Object.assign(new Error('Antigravity needs an absolute executable and profile path'), { code: 'route_invalid' });
+  const kept = Object.fromEntries(Object.entries(env).filter(([key]) => !googleOverride.test(key) && !/^(OPENAI_|ANTHROPIC_|CODEX_|BRIDGE_|CLAUDE_CODE_)/.test(key)));
+  return { command: executable, args: ['acp', '--disable-telemetry', '--log-file', join(profileDir, 'logs', 'acp-server.log')], authMethod: 'oauth-personal',
+    env: { ...kept, GEMINI_HOME: profileDir } };
 }

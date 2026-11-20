@@ -58,12 +58,12 @@ test('Home lists each other harness with its real state and reason, offers no ac
   const g = show(forged); assert.equal(nodes(g.elements.controls).some(n => /harness-row/.test(n.className ?? '')), false, 'a claimed qualification is not shown');
 });
 
-test('the prepared Antigravity launch pins the Google-account route in its own app data and drops every ambient Gemini, Google, ADC or other provider override', () => {
-  const env = { HOME: '/h', PATH: '/bin', GEMINI_API_KEY: 'x', GOOGLE_API_KEY: 'x', GOOGLE_APPLICATION_CREDENTIALS: '/adc.json', GOOGLE_CLOUD_PROJECT: 'p', GOOGLE_GENAI_USE_VERTEXAI: 'true', CLOUDSDK_CONFIG: '/c', OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_OAUTH_TOKEN: 'x' };
-  const spec = antigravityLaunch({ executable: '/opt/agy', appDataDir: '/state/antigravity', env });
-  assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin' }); assert.equal(spec.authMethod, 'oauth-personal');
-  assert.deepEqual(spec.args, ['acp', '--app-data-dir', '/state/antigravity', '--disable-telemetry', '--sandbox']);
-  assert.throws(() => antigravityLaunch({ executable: 'agy', appDataDir: '/s' }), { code: 'route_invalid' });
+test('the prepared Antigravity launch pins the Google-account route to its own profile and log, and drops every ambient Gemini, Google, ADC or other provider override', () => {
+  const env = { HOME: '/h', PATH: '/bin', GEMINI_HOME: '/someone-elses', GEMINI_API_KEY: 'x', GOOGLE_API_KEY: 'x', GOOGLE_APPLICATION_CREDENTIALS: '/adc.json', GOOGLE_CLOUD_PROJECT: 'p', GOOGLE_GENAI_USE_VERTEXAI: 'true', CLOUDSDK_CONFIG: '/c', OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_OAUTH_TOKEN: 'x' };
+  const spec = antigravityLaunch({ executable: '/opt/agy', profileDir: '/state/gemini', env });
+  assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin', GEMINI_HOME: '/state/gemini' }); assert.equal(spec.authMethod, 'oauth-personal');
+  assert.deepEqual(spec.args, ['acp', '--disable-telemetry', '--log-file', '/state/gemini/logs/acp-server.log']); assert.ok(!spec.args.includes('--sandbox'), 'never presented as a boundary');
+  assert.throws(() => antigravityLaunch({ executable: 'agy', profileDir: '/s' }), { code: 'route_invalid' });
 });
 
 test('every ID the builder makes parses back, and a malformed harness-namespace ID is refused too, never passed on as a native model', async () => {

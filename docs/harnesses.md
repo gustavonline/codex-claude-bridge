@@ -51,6 +51,16 @@ A persistent query avoids about 0.65–0.9 s of CLI start per warm turn. Model l
 
 ## Known limits
 
-- Antigravity could not be installed or probed here. The VM's egress policy requires a host approval for `antigravity.google`. Its permission and sandbox behaviour comes from T3's integration and the `agy acp --help` text of 1.5.1. Neither is enforcement evidence.
-- `antigravityLaunch()` prepares the Google-account route in its own app-data directory. It drops ambient `GEMINI_*`, `GOOGLE_*`, `CLOUDSDK_*` and Vertex variables. Nothing calls it yet.
+- **Antigravity, observed natively** (1.5.13, installed by the coordinator; no sign-in, no session, throwaway homes):
+  - `initialize` answers in about 0.3 s and offers `oauth-personal`, `oauth-business`, `gemini-api-key` and `agent-platform` (ADC).
+  - Sessions support resume, load, list and close, but not rewind. The agent supports appending to the system prompt.
+  - The server log goes to `$HOME/.gemini/tmp/…` even with `GEMINI_HOME` and an absolute `--app-data-dir`. With `--log-file` inside the profile, nothing is written to `$HOME` or the workspace.
+  - `agy acp` offers `--agent`, `--process-per-session`, `--ide-mcp-port` and `--sandbox`. It has no per-session `--settings`; only the plain CLI does.
+- **Antigravity, not yet observed:** what a session writes to the workspace, whether a custom agent's tool allowlist really leaves only MCP tools, and what `--sandbox` enforces. These need a signed-in session. Until then they come only from T3's integration and Google's docs, and are not enforcement evidence.
+- `antigravityLaunch()` prepares the Google-account route:
+  - its own profile through `GEMINI_HOME`, with the log pinned inside it;
+  - every other ambient `GEMINI_*`, `GOOGLE_*`, `CLOUDSDK_*` and Vertex variable dropped;
+  - no `--sandbox`, which can silently do nothing.
+
+  Nothing calls it yet.
 - Native Mac desktop behaviour after these changes needs the desktop owner's run.
