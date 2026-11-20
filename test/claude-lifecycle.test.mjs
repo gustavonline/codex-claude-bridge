@@ -25,6 +25,11 @@ test('a CLI that never produces its first message fails the turn with a bounded,
   const session = { close: () => { closed++; }, [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }) };
   const q = bounded(session, ownedProcess(), { firstMs: 50 });
   await assert.rejects(q.next(), { code: 'claude_start_timeout' }); assert.equal(closed, 1);
+  // the SDK's own pending read may reject once it is closed: that must not become an unhandled rejection (which would end the process)
+  let rejectLate; const unhandled = []; const onUnhandled = e => unhandled.push(e); process.on('unhandledRejection', onUnhandled);
+  const closing = bounded({ close: () => rejectLate(new Error('closed')), [Symbol.asyncIterator]: () => ({ next: () => new Promise((_, reject) => { rejectLate = reject; }) }) }, ownedProcess(), { firstMs: 20 });
+  await assert.rejects(closing.next(), { code: 'claude_start_timeout' }); await new Promise(r => setTimeout(r, 20));
+  process.off('unhandledRejection', onUnhandled); assert.deepEqual(unhandled, []);
   // after the first message the stream is the SDK's own, unbounded (a long model turn is normal work, not a fault)
   let n = 0; const next = async () => (++n === 1 ? { value: 'init', done: false } : new Promise(r => setTimeout(() => r({ value: 'late', done: false }), 120)));
   const later = bounded({ close() {}, [Symbol.asyncIterator]: () => ({ next }) }, ownedProcess(), { firstMs: 50 });

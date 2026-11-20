@@ -53,8 +53,9 @@ export function bounded(session, owned, { firstMs = bootMs } = {}) {
     async next() {
       if (!first) return iterator.next();
       first = false; let timer;
-      const late = new Promise((_, reject) => { timer = setTimeout(() => { session.close(); reject(Object.assign(new Error(`Claude Code did not start within ${Math.round(firstMs / 1000)} s. Nothing was answered; try again.`), { code: 'claude_start_timeout' })); }, firstMs); });
-      try { return await Promise.race([iterator.next(), late]); } finally { clearTimeout(timer); }
+      const late = new Promise((_, reject) => { timer = setTimeout(() => { reject(Object.assign(new Error(`Claude Code did not start within ${Math.round(firstMs / 1000)} s. Nothing was answered; try again.`), { code: 'claude_start_timeout' })); session.close(); }, firstMs); }); // settled before close, so the SDK's own close error cannot win
+      const pending = iterator.next(); pending.catch(() => {}); // after a timeout the closed SDK may still reject it: never an unhandled rejection
+      try { return await Promise.race([pending, late]); } finally { clearTimeout(timer); }
     },
     return(value) { return iterator.return ? iterator.return(value) : Promise.resolve({ done: true, value }); },
     close() { session.close(); },
@@ -70,7 +71,8 @@ export async function models({ timeoutMs = bootMs } = {}) {
   let timer;
   try {
     const late = new Promise((_, reject) => { timer = setTimeout(() => reject(Object.assign(new Error('Claude Code did not report its models in time.'), { code: 'claude_start_timeout' })), timeoutMs); });
-    return (await Promise.race([session.supportedModels(), late])).filter(m => m.value !== 'default');
+    const listed = session.supportedModels(); listed.catch(() => {});
+    return (await Promise.race([listed, late])).filter(m => m.value !== 'default');
   } finally { clearTimeout(timer); session.close(); await owned.exited(); }
 }
 
