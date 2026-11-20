@@ -3,7 +3,7 @@
   "version": "0.3.0-rc.13",
   "private": true,
   "type": "module",
-  "description": "Model Bridge — Claude models beneath the unmodified Codex desktop UI",
+  "description": "Codex Model Bridge — Claude models beneath the unmodified Codex desktop UI",
   "bin": {
     "codex-claude": "cli.mjs"
   },
@@ -64,6 +64,6 @@
   "author": "Gustav Online",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gustavonline/codex-claude-bridge.git"
+    "url": "https://github.com/gustavonline/codex-model-bridge.git"
   }
 }

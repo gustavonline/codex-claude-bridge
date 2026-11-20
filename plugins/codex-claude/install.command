@@ -44,7 +44,7 @@ elif command -v gh >/dev/null 2>&1 && gh release download "v$bridge_version" --r
   # GitHub owns repository authentication, including access to private previews.
   :
 else
-  curl --proto '=https' --tlsv1.2 -fLSs "https://github.com/gustavonline/codex-claude-bridge/releases/download/v$bridge_version/$bridge_asset" -o "$bridge_stage/runtime.tgz"
+  curl --proto '=https' --tlsv1.2 -fLSs "https://github.com/gustavonline/codex-model-bridge/releases/download/v$bridge_version/$bridge_asset" -o "$bridge_stage/runtime.tgz"
 fi
 bridge_actual=$(shasum -a 256 "$bridge_stage/runtime.tgz" | cut -d ' ' -f 1)
 [ "$bridge_actual" = "$bridge_sha" ] || { echo 'Bundle checksum mismatch. Nothing was installed.' >&2; exit 1; }

@@ -6,7 +6,7 @@
   "extensions": {
     "com.openai": {
       "interface": {
-        "displayName": "Codex Bridge",
+        "displayName": "Codex Model Bridge",
         "shortDescription": "One workspace. More models.",
         "longDescription": "Keep the Codex desktop interface and add Claude models through your installed, unmodified Claude Code runtime. Two skills set up or diagnose the small local adapter, and a read-only Home view shows its plugin connection, what it cannot confirm, and the next step. One Codex configuration, lazy tools and skills, isolated chats, and metadata-only diagnostics. An independent Gustav Online preview; not an OpenAI or Anthropic product.",
         "developerName": "Gustav Online",
@@ -25,6 +25,6 @@
   "author": {
     "name": "Gustav Online"
   },
-  "repository": "https://github.com/gustavonline/codex-claude-bridge",
+  "repository": "https://github.com/gustavonline/codex-model-bridge",
   "license": "MIT"
 }

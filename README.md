@@ -1,6 +1,6 @@
-<p align="center"><img src="plugins/codex-claude/assets/banner.svg" alt="Model Bridge — one workspace, more models" width="900"></p>
+<p align="center"><img src="plugins/codex-claude/assets/banner.svg" alt="Codex Model Bridge — one workspace, more models" width="900"></p>
 
-# Model Bridge
+# Codex Model Bridge
 
 **Connection dashboard — isolated preview source (7 November).** Home v8 shows actual observed Codex/GPT and Claude Code catalogs alongside user-selected compatible Responses endpoints. The top square slots select which models appear in the activated Bridge picker. Initial choices stay unchanged until an explicit save; the all-connection setting requires at least one available model. Hiding does not delete credentials/history or deny continuation of an existing chat. New catalog entries do not expand a saved selection.
 
@@ -29,9 +29,9 @@ No replacement UI, model API proxy, extra service or permanent daemon. The adapt
 
 Requires macOS, Node.js 22 or newer, Python 3.11 or newer, and a compatible Codex desktop app. Use your own Claude Code installation and login; the installer can install the official CLI when absent. Sign-in happens through Anthropic's own flow. Subscription access and remaining quota are separate checks.
 
-Download the installer ZIP from [Releases](https://github.com/gustavonline/codex-claude-bridge/releases), extract it, and run `Install Model Bridge.command`. Preview releases may be marked prerelease. A source checkout can produce the same package with `npm run bundle -- --pin`.
+Download the installer ZIP from [Releases](https://github.com/gustavonline/codex-model-bridge/releases), extract it, and run `Install Model Bridge.command`. Preview releases may be marked prerelease. A source checkout can produce the same package with `npm run bundle -- --pin`.
 
-Alternatively, install the **Model Bridge** plugin ZIP, then ask its `setup` skill to start setup. The plugin has two skills: setup and diagnose. Installing the skills alone does not execute scripts or start a daemon. The current RC10 release installs and opens only the separate test window described below.
+Alternatively, install the **Codex Model Bridge** plugin ZIP, then ask its `setup` skill to start setup. The plugin has two skills: setup and diagnose. Installing the skills alone does not execute scripts or start a daemon. The current RC10 release installs and opens only the separate test window described below.
 
 The unreleased RC13 source (0.3.0-rc.13) registers a local MCP Apps Home with native global and thread entrypoints. Open **Model Bridge** directly from the host entrypoint; Home reads its state with an empty-argument public tool call, without a chat prompt. The default registration stays unbound/read-only. An explicitly operator-bound isolated deployment offers connection/catalog controls and model slots through public MCP tools; it never guesses a normal profile. The89a15ce layout/sidebar has owner acceptance. Root installed the reviewed5df09d0 provider-affinity repair only in the existing separate Mac test profile. Home v8 browser authentication and all-connection slots are a subsequent source candidate: live browser authorization, combined native picker refresh and owner GUI acceptance remain pending. See [Operations](docs/operations.md#custom-responses-provider-trial) and [Support](docs/support.md). Plugin registration does not attach model routing on an ordinary app launch: the existing startup helper is still required. Its installer prepares both launchers and opens neither; no normal-profile installation is authorized by this source change.
 

@@ -1,7 +1,7 @@
 # Security reports
 
 Report credential exposure, permission bypass or unauthorized session access
-through [GitHub private vulnerability reporting](https://github.com/gustavonline/codex-claude-bridge/security/advisories/new).
+through [GitHub private vulnerability reporting](https://github.com/gustavonline/codex-model-bridge/security/advisories/new).
 Do not post credentials, raw transcripts or desktop logs in public issues.
 
 The preview supports the current candidate only. The adapter is local and uses
