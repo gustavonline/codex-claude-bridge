@@ -413,7 +413,8 @@ function renderProviders(target, c, blocked) {
   // Every other harness, as it really is here: whether its runtime was found (never run), and why it does not run in Bridge. No button: nothing to start.
   if (!providerDraft.detail && !providerDraft.open) (c.harnesses || []).forEach(function (h) {
     var row = node('article', undefined, 'provider-card harness-row'), info = node('div');
-    var line = (h.runtime === 'found' ? h.executable + ' found' : h.runtime === 'not_found' ? 'Needs ' + h.executable : 'Separate runtime') + (h.minimumVersion ? ' ' + h.minimumVersion + ' or newer' : '') + ' · Sign-in and models not checked · Not available in Bridge yet';
+    var needs = h.minimumVersion ? ' ' + h.minimumVersion + ' or newer' : '';
+    var line = (h.runtime === 'found' ? h.executable + ' found, version not checked (needs' + (needs || ' a supported version') + ')' : h.runtime === 'not_found' ? 'Needs ' + h.executable + needs : 'Separate runtime') + ' · Sign-in and models not checked · Not available in Bridge yet';
     var why = node('details'); why.append(node('summary', 'Why'), node('p', h.reason, 'muted'));
     info.append(node('h3', h.label), node('small', line, 'muted'), why); row.append(info); more.append(row);
   });

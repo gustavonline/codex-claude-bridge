@@ -57,7 +57,8 @@ export function bounded(session, owned, { firstMs = bootMs } = {}) {
     async next() {
       try { return await this.read(); }
       catch (error) {
-        const reason = await owned.reason?.(); // what the CLI said before it failed, bounded, as the SDK reports it for its own spawn
+        // what the CLI said before it failed, bounded, as the SDK reports it for its own spawn (not for an abort: Stop has nothing to explain)
+        const reason = error?.name === 'AbortError' ? '' : await owned.reason?.();
         if (reason && error instanceof Error && !/stderr:/.test(error.message)) error.message += '. stderr: ' + reason.slice(-1000);
         throw error;
       }
@@ -76,7 +77,7 @@ export function bounded(session, owned, { firstMs = bootMs } = {}) {
   };
 }
 
-// The SDK's model list (no prompt, no inference). Bounded like a boot, and its child is awaited before the list is returned.
+// The SDK's model list (no prompt, no inference). Bounded like a boot; its child is reaped in the background.
 export async function models({ timeoutMs = bootMs } = {}) {
   const owned = ownedProcess();
   const session = query({ prompt: (async function* () { await new Promise(() => {}); })(), options: options({ persistSession: false, spawnClaudeCodeProcess: owned.spawnClaudeCodeProcess }) });
@@ -88,7 +89,7 @@ export async function models({ timeoutMs = bootMs } = {}) {
   } catch (error) {
     const why = await owned.reason(); if (why && error instanceof Error && !/stderr:/.test(error.message)) error.message += '. stderr: ' + why.slice(-1000);
     throw error;
-  } finally { clearTimeout(timer); session.close(); owned.exited().catch(() => {}); } // nothing waits on the probe child (no session); it is still reaped and bounded
+  } finally { clearTimeout(timer); session.close(); owned.exited().catch(() => {}); } // the list is returned without waiting for the probe child (it has no session); the child is still reaped, bounded
 }
 
 export function codexModels(list) {

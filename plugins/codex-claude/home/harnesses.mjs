@@ -80,12 +80,12 @@ export function harnessRefusal(route) {
 // Prepared launch for Antigravity's official ACP server (`agy acp`, flags verified on 1.5.13). Nothing calls it: Antigravity is not qualified
 // (docs/antigravity-qualification.md). The Google-account route (oauth-personal) runs with auto-update off and file credential storage, and every
 // ambient Gemini/Google/ADC/agy and other provider variable is removed, so a parent shell can never switch it to API-key or Agent Platform billing.
-// Measured on 1.5.13: GEMINI_HOME moves neither the login nor state (both stay under $HOME/.gemini) and the server log follows only --log-file,
-// so the log is pinned in the given directory. `--sandbox` is not passed: it can silently do nothing and is not a boundary.
+// It does NOT isolate the profile: on 1.5.13 the login and state live under $HOME/.gemini whatever GEMINI_HOME says (an own profile would need
+// --gemini-dir and its own sign-in). Only the server log is moved, into `logDir`. `--sandbox` is not passed: it can silently do nothing.
 const inherited = /^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|VERTEX|ANTIGRAVITY_|AGY_|OPENAI_|ANTHROPIC_|CODEX_|BRIDGE_|CLAUDE_CODE_)/;
-export function antigravityLaunch({ executable, profileDir, env = process.env }) {
-  if (!isAbsolute(executable ?? '') || !isAbsolute(profileDir ?? '')) throw Object.assign(new Error('Antigravity needs an absolute executable and profile path'), { code: 'route_invalid' });
+export function antigravityLaunch({ executable, logDir, env = process.env }) {
+  if (!isAbsolute(executable ?? '') || !isAbsolute(logDir ?? '')) throw Object.assign(new Error('Antigravity needs an absolute executable and log directory'), { code: 'route_invalid' });
   const kept = Object.fromEntries(Object.entries(env).filter(([key]) => !inherited.test(key)));
-  return { command: executable, args: ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(profileDir, 'logs', 'acp-server.log')], authMethod: 'oauth-personal',
-    env: { ...kept, GEMINI_HOME: profileDir, AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1' } };
+  return { command: executable, args: ['acp', '--process-per-session', '--disable-telemetry', '--include-default-customizations=false', '--log-file', join(logDir, 'acp-server.log')], authMethod: 'oauth-personal',
+    env: { ...kept, AGY_CLI_DISABLE_AUTO_UPDATE: '1', AGY_ACP_FORCE_FILE_STORAGE: '1' } };
 }

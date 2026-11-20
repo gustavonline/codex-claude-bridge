@@ -37,7 +37,7 @@ test('a CLI that never produces its first message fails the turn with a bounded,
   assert.deepEqual([capabilities.nativeTools, capabilities.toolBoundary], [false, 'codex-mcp']);
 });
 
-test('interrupt then immediate resend: the resend waits for the first query\'s child to exit instead of being refused, so at most one child exists and each prompt is sent once', async () => {
+test('interrupt then immediate resend: the chat is released only after the first query\'s child exited, so at most one child exists and each prompt is sent once', async () => {
   const f = fixture(); try {
     const id = await f.start('haiku'), a = (await f.send(id, 'warm')).turn; await f.done(a.id);
     let live = 0, peak = 0; const exits = [], base = f.bridge.runQuery;
@@ -52,10 +52,9 @@ test('interrupt then immediate resend: the resend waits for the first query\'s c
     await f.bridge.request('turn/interrupt', { threadId: id, turnId: first.id }); gate.resolve(); f.controls.query = undefined;
     await new Promise(r => setTimeout(r, 60));
     assert.equal(f.events.some(e => e.method === 'turn/completed' && e.params.turn.id === first.id), false, 'not completed while its child still runs');
-    let answered = false; const resend = f.send(id, 'RESEND').then(r => { answered = true; return r; });
-    await new Promise(r => setTimeout(r, 60)); assert.equal(answered, false, 'the resend waits while the first child still runs'); assert.equal(exits.length, 1, 'and starts no second child');
+    await assert.rejects(f.send(id, 'RESEND'), /already running/, 'a resend cannot start a second child on the same session');
     exits[0].resolve(); await f.done(first.id);
-    const second = (await resend).turn; while (exits.length < 2) await new Promise(r => setTimeout(r, 5)); exits[1].resolve(); await f.done(second.id);
+    const second = (await f.send(id, 'RESEND')).turn; while (exits.length < 2) await new Promise(r => setTimeout(r, 5)); exits[1].resolve(); await f.done(second.id);
     assert.equal(peak, 1, 'never two children'); assert.equal(f.bridge.records.get(id).turns.find(t => t.id === first.id).status, 'interrupted');
     const sent = f.queries.map(q => q.input?.[0]?.text); assert.deepEqual(sent.filter(t => t === 'FIRST' || t === 'RESEND'), ['FIRST', 'RESEND']);
   } finally { f.close(); }
@@ -68,9 +67,15 @@ test('a real spawned process is reaped through the SDK-shaped spawn hook with th
   assert.deepEqual(await owned.exited(), { state: 'exited' }); assert.equal(alive(pid), false);
 });
 
-test('a CLI that fails still reports why: its bounded stderr tail is appended to the SDK error, as the SDK does for its own spawn', async () => {
-  const owned = ownedProcess({ graceMs: 2000 }); owned.spawnClaudeCodeProcess(child('process.stderr.write("No conversation found with session ID: x\\n"); process.exit(1)'));
-  // the SDK can raise its exit error before the last stderr chunk arrives: the reason is read once the stream has closed
+test('a CLI that fails still reports why: its stderr, even a chunk arriving after the exit, is appended to the SDK error as the SDK does for its own spawn', async () => {
+  const { EventEmitter } = await import('node:events');
+  const fake = () => { const c = new EventEmitter(); c.stderr = new EventEmitter(); c.pid = 4242; c.exitCode = null; c.signalCode = null; c.kill = () => true; return c; };
+  let c; const owned = ownedProcess({ spawnProcess: () => (c = fake()) }); owned.spawnClaudeCodeProcess(child(''));
+  c.stderr.emit('data', Buffer.from('No conversation found ')); c.exitCode = 1; c.emit('exit', 1, null); // the SDK raises its error on this plain exit
+  setTimeout(() => { c.stderr.emit('data', Buffer.from('with session ID: x\n')); c.stderr.emit('close'); }, 30); // the last chunk comes later
   const failing = bounded({ close() {}, [Symbol.asyncIterator]: () => ({ next: async () => { throw new Error('Claude Code process exited with code 1'); } }) }, owned, { firstMs: 1000 });
   await assert.rejects(failing.next(), e => e.message === 'Claude Code process exited with code 1. stderr: No conversation found with session ID: x');
+  // a Stop is not explained with stderr
+  const aborted = bounded({ close() {}, [Symbol.asyncIterator]: () => ({ next: async () => { throw Object.assign(new Error('aborted'), { name: 'AbortError' }); } }) }, owned, { firstMs: 1000 });
+  await assert.rejects(aborted.next(), e => e.message === 'aborted');
 });

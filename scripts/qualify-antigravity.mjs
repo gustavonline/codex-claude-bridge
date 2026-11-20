@@ -2,20 +2,23 @@
 // One ACP session in a throwaway workspace, a few short turns on the cheapest model. Native permission requests are answered by POLICY
 // (deny | mcp-only | allow) and a Bridge-hosted HTTP MCP echo tool is offered. Optional PROBE_AGENT / PROBE_HOOKS put a custom agent or hooks
 // file in the THROWAWAY workspace only. Prints tool calls, permission requests, file effects inside/outside the workspace and the teardown.
-// Usage: node scripts/qualify-antigravity.mjs --run <agy> <scratch-dir> <policy> '<json prompts>' ['<json extra acp args>']
+// agy itself still records each probe session in the signed-in profile ($HOME/.gemini/antigravity-cli/conversations on 1.5.13).
+// Usage: node scripts/qualify-antigravity.mjs --run <agy> <scratch-parent-dir> <policy> '<json prompts>' ['<json extra acp args>']
 import { spawn, execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdirSync, writeFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { isAbsolute } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
-const [consent, agy, root, policy = 'deny', promptJson, extraJson = '[]'] = process.argv.slice(2);
+const [consent, agy, parent, policy = 'deny', promptJson, extraJson = '[]'] = process.argv.slice(2);
 if (consent !== '--run') throw new Error('This sends real Antigravity turns on an existing login. Pass --run to authorize a few short synthetic turns.');
-if (!isAbsolute(agy ?? '') || !isAbsolute(root ?? '') || !['deny', 'mcp-only', 'allow'].includes(policy)) throw new Error('Usage: --run <absolute agy> <absolute scratch dir> <deny|mcp-only|allow> <json prompts> [json acp args]');
+if (!isAbsolute(agy ?? '') || !isAbsolute(parent ?? '') || !['deny', 'mcp-only', 'allow'].includes(policy)) throw new Error('Usage: --run <absolute agy> <absolute scratch dir> <deny|mcp-only|allow> <json prompts> [json acp args]');
 const prompts = JSON.parse(promptJson), extraArgs = JSON.parse(extraJson);
-const ws = join(root, 'workspace'), outside = join(root, 'outside'); rmSync(root, { recursive: true, force: true }); mkdirSync(ws, { recursive: true }); mkdirSync(outside);
+// A fresh run directory inside the given parent: nothing that already exists is ever removed or reused.
+mkdirSync(parent, { recursive: true }); const root = mkdtempSync(join(parent, 'agy-qualification-'));
+const ws = join(root, 'workspace'), outside = join(root, 'outside'); mkdirSync(ws); mkdirSync(outside);
 writeFileSync(join(ws, 'README.txt'), 'probe workspace\n');
 if (process.env.PROBE_HOOKS) { mkdirSync(join(ws, '.agents'), { recursive: true }); writeFileSync(join(ws, '.agents/hooks.json'), process.env.PROBE_HOOKS.replaceAll('$WS', ws)); }
 if (process.env.PROBE_AGENT) { mkdirSync(join(ws, '.agents/agents'), { recursive: true }); writeFileSync(join(ws, '.agents/agents/bridge-mcp.md'), process.env.PROBE_AGENT); }
@@ -85,5 +88,6 @@ report.stdinCloseExited = exited; report.closeToExitMs = Math.round(performance.
 await new Promise(r => setTimeout(r, 500)); report.processesAfterClose = tree();
 if (report.processesAfterClose) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
 http.close(); delete report.promptAt;
+report.runDirectory = root;
 console.log(JSON.stringify(report, null, 1));
 process.exit(0);
