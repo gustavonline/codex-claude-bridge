@@ -22,9 +22,10 @@ This is the detailed evidence behind PR #31. That PR is the preserved RC13 sourc
 
 | Head | Score | Outcome |
 | --- | --- | --- |
-| `1147ab1` | 7/10 | Baseline 45 → 0 confirmed by running (base 710/45, head 768/0). Resume fix and lifecycle sound. Nine findings, fixed in `930f006`. |
-| `930f006` | 8/10 | Refusal bypass, bundle pin, stderr race and model-list wait closed. Seven findings, fixed in `4a2cd11`. |
+| `1147ab1` | 7/10 | Baseline 45 → 0 confirmed by running (base 710/45, head 768/0). Resume fix and lifecycle sound. Nine findings answered in `930f006`. The next review recorded six of them closed, one mostly, one partly and one open (route identity is a reserved namespace, not routing; stated in the docs). |
+| `930f006` | 8/10 | Refusal bypass, bundle pin, stderr race and model-list wait closed. Seven findings answered in `4a2cd11`. The next review recorded four closed, one mostly, one partly (the abort guard) and one open (CI not run). |
 | `4a2cd11` | 8.5/10 | Five of six fixes landed. The abort guard did not match the SDK's `AbortError`, and the Stop wording was imprecise; both fixed in `94a6f82`. |
+| `c05f386` | 8.5/10 | The abort guard, Stop wording and hooks wording are confirmed closed. The head conflicted with `main` (#32), which was merged in `c1ba9b8`. A flaky launch test (a host-wide process-name match), the stale #30 claim and Stop-window behaviour not pinned by tests were fixed afterwards. |
 
 ## Checks (Linux, Node 22)
 

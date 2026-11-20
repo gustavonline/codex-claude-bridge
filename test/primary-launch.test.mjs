@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 // This is not Mac activation, GUI or model acceptance.
 const launcher = fileURLToPath(new URL('../launch.py', import.meta.url));
 const bridgeProgram = realpathSync(fileURLToPath(new URL('../bridge.mjs', import.meta.url)));
-const executableName = 'CodexSyntheticPrimaryTest';
+const executableName = `CodexSyntheticPrimaryTest${process.pid}`; // unique per run: launch.py matches any running copy of an app by name, host-wide
 // The synthetic desktop is a shell named like the app. Like Codex, it starts
 // CODEX_CLI_PATH app-server and holds that app-server's stdin open for its own
 // lifetime: an OS pipe whose writer (sleep) never closes it. Run28/29's Node

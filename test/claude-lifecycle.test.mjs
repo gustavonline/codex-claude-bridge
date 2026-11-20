@@ -54,9 +54,22 @@ test('interrupt then immediate resend: the chat is released only after the first
     await new Promise(r => setTimeout(r, 60));
     assert.equal(f.events.some(e => e.method === 'turn/completed' && e.params.turn.id === first.id), false, 'not completed while its child still runs');
     await assert.rejects(f.send(id, 'RESEND'), /already running/, 'a resend cannot start a second child on the same session');
+    // The rest of the window, as docs/harnesses.md states it: no steer, no queue start; a message can still be queued.
+    await assert.rejects(f.bridge.request('turn/steer', { threadId: id, expectedTurnId: first.id, input: text('steer') }), /no longer active|accepting steering/);
+    const waiting = (await f.bridge.request('thread/queue/add', { threadId: id, clientUserMessageId: 'QUEUED-IN-WINDOW', input: text('QUEUED') })).queuedSubmission;
+    await assert.rejects(f.bridge.request('thread/queue/start', { threadId: id, queuedSubmissionId: waiting.id }), /no longer active|accepting steering/);
     exits[0].resolve(); await f.done(first.id);
     const second = (await f.send(id, 'RESEND')).turn; while (exits.length < 2) await new Promise(r => setTimeout(r, 5)); exits[1].resolve(); await f.done(second.id);
-    assert.equal(peak, 1, 'never two children'); assert.equal(f.bridge.records.get(id).turns.find(t => t.id === first.id).status, 'interrupted');
+    assert.equal(peak, 1, 'never two children');
+    // The message queued in the window is not started by the interrupted turn's end; it runs once, after the next completed turn.
+    // Bounded waits with a diagnostic: the queued turn's own synthetic child is released explicitly, then the chat must settle.
+    const until = async (ok, what) => { for (let i = 0; i < 1000 && !ok(); i++) await new Promise(r => setTimeout(r, 5)); assert.ok(ok(), `${what}: ${JSON.stringify(f.bridge.records.get(id).turns.map(t => t.status))}, children ${exits.length}, active ${f.bridge.active.has(id)}`); };
+    await until(() => exits.length >= 3, 'the queued message started its own child'); exits[2].resolve();
+    await until(() => !f.bridge.active.has(id), 'the queued turn settled');
+    assert.equal(peak, 1, 'never two children, the queued turn included');
+    assert.deepEqual(f.bridge.records.get(id).turns.map(t => [t.status, t.items.find(i => i.type === 'userMessage').content[0].text]).slice(1, 4),
+      [['interrupted', 'FIRST'], ['completed', 'RESEND'], ['completed', 'QUEUED']]);
+    assert.deepEqual(f.bridge.records.get(id).queue, []); assert.equal(f.bridge.records.get(id).turns.find(t => t.id === first.id).status, 'interrupted');
     const sent = f.queries.map(q => q.input?.[0]?.text); assert.deepEqual(sent.filter(t => t === 'FIRST' || t === 'RESEND'), ['FIRST', 'RESEND']);
   } finally { f.close(); }
 });
