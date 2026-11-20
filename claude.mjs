@@ -1,4 +1,4 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { AbortError, query } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 
@@ -58,7 +58,7 @@ export function bounded(session, owned, { firstMs = bootMs } = {}) {
       try { return await this.read(); }
       catch (error) {
         // what the CLI said before it failed, bounded, as the SDK reports it for its own spawn (not for an abort: Stop has nothing to explain)
-        const reason = error?.name === 'AbortError' ? '' : await owned.reason?.();
+        const reason = error instanceof AbortError || error?.name === 'AbortError' ? '' : await owned.reason?.(); // the SDK's own AbortError reports name 'Error'
         if (reason && error instanceof Error && !/stderr:/.test(error.message)) error.message += '. stderr: ' + reason.slice(-1000);
         throw error;
       }

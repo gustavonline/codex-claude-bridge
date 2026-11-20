@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { AbortError } from '@anthropic-ai/claude-agent-sdk';
 import { ownedProcess, bounded, capabilities } from '../claude.mjs';
 import { fixture } from './support/fixture.mjs';
 
@@ -75,7 +76,7 @@ test('a CLI that fails still reports why: its stderr, even a chunk arriving afte
   setTimeout(() => { c.stderr.emit('data', Buffer.from('with session ID: x\n')); c.stderr.emit('close'); }, 30); // the last chunk comes later
   const failing = bounded({ close() {}, [Symbol.asyncIterator]: () => ({ next: async () => { throw new Error('Claude Code process exited with code 1'); } }) }, owned, { firstMs: 1000 });
   await assert.rejects(failing.next(), e => e.message === 'Claude Code process exited with code 1. stderr: No conversation found with session ID: x');
-  // a Stop is not explained with stderr
-  const aborted = bounded({ close() {}, [Symbol.asyncIterator]: () => ({ next: async () => { throw Object.assign(new Error('aborted'), { name: 'AbortError' }); } }) }, owned, { firstMs: 1000 });
-  await assert.rejects(aborted.next(), e => e.message === 'aborted');
+  // a Stop is not explained with stderr: the SDK's own AbortError (whose name is 'Error') is recognised by its class
+  const aborted = bounded({ close() {}, [Symbol.asyncIterator]: () => ({ next: async () => { throw new AbortError('Claude Code process aborted by user'); } }) }, owned, { firstMs: 1000 });
+  await assert.rejects(aborted.next(), e => e.message === 'Claude Code process aborted by user');
 });

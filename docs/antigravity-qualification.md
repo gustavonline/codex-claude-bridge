@@ -1,6 +1,6 @@
 # Antigravity qualification (20 November)
 
-**Result: not qualified, so Model Bridge does not run it.** An MCP-only Antigravity session is possible natively. But the repository's own Antigravity hooks run commands outside the Codex sandbox, so no Codex permission boundary holds.
+**Result: not qualified, so Model Bridge does not run it.** An MCP-only Antigravity session is possible natively. But a workspace's own Antigravity hooks run commands outside the Codex sandbox, so no Codex permission boundary holds.
 
 ## Setup
 
