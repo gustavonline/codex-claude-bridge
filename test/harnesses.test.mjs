@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { harnessModelId, parseHarnessModelId, routeOf, harnessStatuses, harnesses } from '../plugins/codex-claude/home/harnesses.mjs';
+import { harnessModelId, parseHarnessModelId, routeOf, harnessStatuses, harnesses, antigravityLaunch } from '../plugins/codex-claude/home/harnesses.mjs';
 import { prepareProviderHome, providerControls } from '../plugins/codex-claude/home/provider-controls.mjs';
 import { session } from '../plugins/codex-claude/home/server.mjs';
 import { isClaude } from '../providers.mjs';
@@ -56,4 +56,12 @@ test('Home lists each other harness with its real state and reason, offers no ac
   assert.match(nodes(agy).map(n => n.textContent).join(' '), /(Needs agy|agy found) · Not available in Bridge yet/); assert.match(h.text('controls'), /approval prompts are not a sandbox/);
   const forged = structuredClone(status); forged.controls.harnesses[0].execution = 'qualified';
   const g = show(forged); assert.equal(nodes(g.elements.controls).some(n => /harness-row/.test(n.className ?? '')), false, 'a claimed qualification is not shown');
+});
+
+test('the prepared Antigravity launch pins the Google-account route in its own app data and drops every ambient Gemini, Google, ADC or other provider override', () => {
+  const env = { HOME: '/h', PATH: '/bin', GEMINI_API_KEY: 'x', GOOGLE_API_KEY: 'x', GOOGLE_APPLICATION_CREDENTIALS: '/adc.json', GOOGLE_CLOUD_PROJECT: 'p', GOOGLE_GENAI_USE_VERTEXAI: 'true', CLOUDSDK_CONFIG: '/c', OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'x', CLAUDE_CODE_OAUTH_TOKEN: 'x' };
+  const spec = antigravityLaunch({ executable: '/opt/agy', appDataDir: '/state/antigravity', env });
+  assert.deepEqual(spec.env, { HOME: '/h', PATH: '/bin' }); assert.equal(spec.authMethod, 'oauth-personal');
+  assert.deepEqual(spec.args, ['acp', '--app-data-dir', '/state/antigravity', '--disable-telemetry', '--sandbox']);
+  assert.throws(() => antigravityLaunch({ executable: 'agy', appDataDir: '/s' }), { code: 'route_invalid' });
 });

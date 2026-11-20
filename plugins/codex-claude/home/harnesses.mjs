@@ -71,3 +71,13 @@ export function harnessRefusal(route) {
   const h = harness(route.harness);
   return Object.assign(new Error(`${h ? h.label : 'This harness'} is not available in Model Bridge yet, so nothing was sent. ${h?.reason ?? ''}`.trim()), { code: 'harness_not_qualified' });
 }
+
+// Prepared launch for Antigravity's official ACP server (flags of `agy acp --help`, 1.5.x), used once its tool boundary is qualified. The
+// subscription route signs in with the Google account (oauth-personal) in its OWN app-data directory, and ambient Gemini/Google/ADC variables
+// are removed so a parent shell can never switch it to API-key or Vertex billing. Nothing here runs agy.
+const googleOverride = /^(GEMINI_|GOOGLE_|GCLOUD_|CLOUDSDK_|VERTEX|ANTIGRAVITY_)/;
+export function antigravityLaunch({ executable, appDataDir, env = process.env }) {
+  if (!isAbsolute(executable ?? '') || !isAbsolute(appDataDir ?? '')) throw Object.assign(new Error('Antigravity needs an absolute executable and app-data path'), { code: 'route_invalid' });
+  return { command: executable, args: ['acp', '--app-data-dir', appDataDir, '--disable-telemetry', '--sandbox'], authMethod: 'oauth-personal',
+    env: Object.fromEntries(Object.entries(env).filter(([key]) => !googleOverride.test(key) && !/^(OPENAI_|ANTHROPIC_|CODEX_|BRIDGE_|CLAUDE_CODE_)/.test(key))) };
+}
