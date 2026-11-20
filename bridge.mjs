@@ -1750,6 +1750,10 @@ export class Bridge {
       running.acceptingSteering = false; running.steeringInput.close();
       try { running.query?.close(); await running.mcp?.instance.close(); }
       catch (error) { this.log('turn.cleanup_failed', { threadId, turnId: turn.id, ...errorMetadata(error) }); }
+      // The query's own child must be gone before the chat is released: the next turn, a queued one or an immediate resend resumes the SAME
+      // session, and the checkpoint below reads what that child wrote. Bounded (killed after a grace); an unconfirmed exit is logged.
+      try { const exit = await running.query?.exited?.(); if (exit && exit.state !== 'none' && exit.state !== 'exited') this.log('turn.child_exit', { threadId, turnId: turn.id, status: exit.state }); }
+      catch (error) { this.log('turn.cleanup_failed', { threadId, turnId: turn.id, ...errorMetadata(error) }); }
       try { turn.claudeCheckpoint = await this.history.checkpoint(record); }
       catch (error) { this.log('history.checkpoint_failed', { threadId, turnId: turn.id, ...errorMetadata(error) }); }
       for (const value of openItems.values()) {
