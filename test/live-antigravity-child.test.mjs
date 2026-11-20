@@ -8,6 +8,7 @@ import { sessionNamespace } from '../sessions.mjs';
 // child through Antigravity, the child asks a question through the mailbox, the parent's wait wakes, the parent replies, and the child continues
 // in the same agy session. The Codex host is the test fixture (no Codex model is called); Gemini runs for real inside the process boundary.
 const live = process.env.BRIDGE_LIVE_ANTIGRAVITY === '1';
+if (live) process.env.BRIDGE_AGY ??= 'agy'; // the explicit enablement Bridge requires
 const call = async (f, threadId, turnId, tool, args) => {
   const r = await f.bridge.toolRequest('item/tool/call', { namespace: sessionNamespace, threadId, turnId, callId: randomUUID(), tool, arguments: args });
   return r.success ? JSON.parse(r.contentItems[0].text) : { error: r.contentItems[0].text };

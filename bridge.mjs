@@ -1155,6 +1155,11 @@ export class Bridge {
         else throw new RpcError(route?.harness === 'antigravity' && ready ? 'An Antigravity chat keeps its model; start a new chat to use another one. Nothing was changed.' : harnessRefusal(route ?? { harness: null }).message, -32602);
       }
     }
+    // An Antigravity chat keeps its runtime and model: any other model named on it is refused here, before a router could read it as a switch.
+    if (['thread/resume', 'thread/fork', 'thread/settings/update', 'turn/start'].includes(method) && this.records.get(params.threadId)?.provider === 'antigravity') {
+      const named = params.collaborationMode?.settings?.model ?? params.model;
+      if (named != null && named !== this.records.get(params.threadId).model) throw new RpcError('An Antigravity chat keeps its model; start a new chat to use another one. Nothing was changed.', -32602);
+    }
     if (this.localResponses && !internal.localRouted)
       return this.localResponses.request(method, params, (m, p) => this.request(m, p, { ...internal, localRouted: true }));
     // A chat with unread messages from chats it created: its next turn carries an untrusted pointer to them (never their content, never a wake).
@@ -1216,6 +1221,10 @@ export class Bridge {
         list = this.localResponses.registry.filterPicker(list, params.includeHidden === true);
         if (this.connectionRoot) try { recordOffered(this.connectionRoot, offeredClaude.filter(id => list.some(m => m.id === id)), { wait: false }); } catch (error) { this.log('connections.record_failed', errorMetadata(error)); }
       }
+      // Qualified Antigravity models, as the signed-in account reports them, under their explicit harness routes ("new chats" only: an existing
+      // chat keeps its runtime). Never blocking: a cold catalog is loaded in the background and offered from the next list on.
+      if (this.agyCatalogReady) for (const m of this.agyCatalogReady.models) if (!list.some(x => x.id === m.id)) list.push(antigravityRow(m, this.agyCatalogReady.levels));
+      else if (!this.agyCatalogWarm && process.platform === 'linux' && this.antigravityRuntime()) { this.agyCatalogWarm = true; this.antigravityCatalog().then(c => { this.agyCatalogReady = c.models.length ? c : null; this.agyCatalogWarm = false; }); }
       const result = this.page(list, params), slots = this.localResponses?.registry.slots();
       this.log('models.listed', { catalogRows: list.length, returnedRows: result.data.length,
         hiddenRows: result.data.filter(m => m.hidden === true).length, selectedRows: slots?.models?.length,
@@ -1809,9 +1818,10 @@ export class Bridge {
   // ---- Antigravity chats (antigravity.mjs inside harness-sandbox.mjs; Linux only) ------------------------------------------------------------
   // The same Bridge core as a Claude chat (native host thread, history, queue, session tools, mailbox, permissions); only the runtime differs.
   // Qualified only where the whole-process boundary works, agy is found and its signed-in catalog loads; the catalog is the account's own.
+  // Antigravity runs only when explicitly enabled: BRIDGE_AGY names its runtime (Home's connection list shows a runtime it merely found).
   antigravityRuntime() {
-    const executable = process.env.BRIDGE_AGY ?? findExecutable('agy');
-    return executable ? { executable, home: process.env.HOME } : null;
+    const named = process.env.BRIDGE_AGY;
+    return named && findExecutable(named) ? { executable: findExecutable(named), home: process.env.HOME } : null;
   }
   antigravityAgent(home) {
     // The MCP-only main agent, under a per-install name so no workspace can shadow it, in agy's own config (never a workspace).
@@ -1836,7 +1846,7 @@ export class Bridge {
       } catch (error) { this.log('antigravity.catalog_failed', errorMetadata(error)); return { models: [], levels: [], reason: 'catalog_failed' }; }
       finally { rmSync(cwd, { recursive: true, force: true }); }
     })();
-    this.agyCatalog = pending;
+    this.agyCatalog = pending; pending.then(c => { if (c.models.length) this.agyCatalogReady = c; });
     pending.then(c => { if (!c.models.length && this.agyCatalog === pending) setTimeout(() => { if (this.agyCatalog === pending) this.agyCatalog = null; }, 60_000).unref?.(); });
     return pending;
   }
@@ -1911,7 +1921,7 @@ export class Bridge {
         record.nativePersisted = true; this.save(record);
       }
       const runtime = this.antigravityRuntime(); if (!runtime) throw new Error('Antigravity (agy) is no longer found on this system; nothing was sent.');
-      session = await openAntigravity({ ...runtime, cwd: record.thread.cwd, agentName: this.antigravityAgent(runtime.home), mcpServe,
+      session = await (this.antigravityOpen ?? openAntigravity)({ ...runtime, cwd: record.thread.cwd, agentName: this.antigravityAgent(runtime.home), mcpServe,
         codexTools: new Set(['find_tools', 'call_tool', 'find_skills', 'read_skill', 'shell', 'read_history']), resume: record.acpSessionId,
         onEvent: event => {
           if (event.type !== 'text' || running.finished) return;
@@ -1952,6 +1962,12 @@ export class Bridge {
   }
 }
 
+// A model/list row for an Antigravity model: its explicit route as the ID, the account's own name and thinking levels, never a default.
+function antigravityRow(m, levels) {
+  return { id: m.id, model: m.id, displayName: `${m.name} · Antigravity`, description: 'Runs through Google Antigravity in Model Bridge\'s process boundary. New chats only.',
+    hidden: false, isDefault: false, defaultReasoningEffort: levels.includes('medium') ? 'medium' : levels[0] ?? 'none',
+    supportedReasoningEfforts: (levels.length ? levels : ['none']).map(reasoningEffort => ({ reasoningEffort, description: reasoningEffort })), inputModalities: ['text'], supportsPersonality: false };
+}
 // The instructions an Antigravity chat starts with: where it runs, which tools it has, and how a created chat answers its creator.
 function antigravityPreamble(record) {
   return ['[Model Bridge, application context, not from the user]',
