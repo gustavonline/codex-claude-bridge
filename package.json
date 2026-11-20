@@ -1,6 +1,6 @@
 {
   "name": "codex-claude-bridge-local",
-  "version": "0.3.0-rc.9",
+  "version": "0.3.0-rc.13",
   "private": true,
   "type": "module",
   "description": "Codex Model Bridge — Claude models beneath the unmodified Codex desktop UI",
@@ -13,6 +13,16 @@
     "smoke.mjs",
     "bridge.mjs",
     "capabilities.mjs",
+    "connections.mjs",
+    "continuity.mjs",
+    "runtime-handoff.mjs",
+    "custom-turns.mjs",
+    "plugins/codex-claude/home/providers.mjs",
+    "plugins/codex-claude/home/harnesses.mjs",
+    "plugins/codex-claude/home/credential-helper.mjs",
+    "plugins/codex-claude/home/native-secrets.mjs",
+    "plugins/codex-claude/home/connection-policy.mjs",
+    "plugins/codex-claude/home/os-secret.py",
     "claude.mjs",
     "fork.mjs",
     "history.mjs",
@@ -29,10 +39,13 @@
     "README.md",
     "LICENSE",
     "docs",
-    "npm-shrinkwrap.json"
+    "npm-shrinkwrap.json",
+    "history-read.mjs",
+    "context-handoff.mjs",
+    "transition-notice.mjs"
   ],
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node scripts/run-tests.mjs",
     "start": "node cli.mjs",
     "doctor": "node cli.mjs doctor",
     "check": "npm test && python3 -m py_compile launch.py mirror.py && node scripts/check-package.mjs",
@@ -41,7 +54,7 @@
     "test:distribution": "node scripts/check-distribution.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.296",
+    "@anthropic-ai/claude-agent-sdk": "0.3.325",
     "@modelcontextprotocol/sdk": "1.29.0"
   },
   "engines": {

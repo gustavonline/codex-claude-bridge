@@ -31,7 +31,7 @@ export function errorMetadata(error) {
 
 const words = new Set(['peer', 'direction', 'method', 'stage', 'status', 'model', 'provider', 'previousModel', 'previousProvider', 'effort', 'previousEffort', 'server', 'tool', 'errorCategory', 'signal', 'reason', 'version']);
 const ids = new Set(['rpcId', 'traceId', 'runId', 'threadId', 'sourceThreadId', 'turnId', 'sessionId', 'queuedSubmissionId']);
-const numbers = new Set(['durationMs', 'errorCode', 'exitCode', 'dynamicToolCount', 'restoredThreads', 'toolCount', 'instructionCharacters', 'contextOverrideCount', 'retainedTurns', 'removedTurns', 'changedEntries', 'queueLength', 'activeTurns', 'pendingCalls']);
+const numbers = new Set(['durationMs', 'errorCode', 'exitCode', 'dynamicToolCount', 'restoredThreads', 'toolCount', 'instructionCharacters', 'contextOverrideCount', 'retainedTurns', 'removedTurns', 'changedEntries', 'queueLength', 'activeTurns', 'pendingCalls', 'limit', 'catalogRows', 'returnedRows', 'hiddenRows', 'selectedRows', 'slotsRevision', 'rowIndex']);
 
 // The same allowlist is applied again when exporting older/on-disk logs.
 export function safeFields(fields = {}) {
@@ -42,7 +42,7 @@ export function safeFields(fields = {}) {
     else if (ids.has(key) && typeof value === 'string' && /^(?:[\da-f-]{8,80}|bridge-\d+)$/.test(value)) safe[key] = value;
     else if (key === 'rpcId' && Number.isSafeInteger(value)) safe[key] = value;
     else if (key === 'errorFingerprint' && typeof value === 'string' && /^[\da-f]{16}$/.test(value)) safe[key] = value;
-    else if (['resuming', 'legacy'].includes(key) && typeof value === 'boolean') safe[key] = value;
+    else if (['resuming', 'legacy', 'includeHidden', 'cursorPresent', 'hidden'].includes(key) && typeof value === 'boolean') safe[key] = value;
   }
   return safe;
 }

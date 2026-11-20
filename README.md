@@ -2,6 +2,12 @@
 
 # Codex Model Bridge
 
+**Connection dashboard — isolated preview source (7 November).** Home v8 shows actual observed Codex/GPT and Claude Code catalogs alongside user-selected compatible Responses endpoints. The top square slots select which models appear in the activated Bridge picker. Initial choices stay unchanged until an explicit save; the all-connection setting requires at least one available model. Hiding does not delete credentials/history or deny continuation of an existing chat. New catalog entries do not expand a saved selection.
+
+OpenRouter has an explicit **browser sign-in** flow (PKCE, finite loopback callback, native OS secret storage). Home receives only an endpoint-bound reference, never the code, verifier or key. The preset permits only models with explicit zero catalog prices and never selects a paid fallback. Catalog prices and advertised parameters are observations, not a tool/stream compatibility or billing guarantee. Generic HTTPS and explicit loopback/SSH-forwarded Responses endpoints remain available with optional operator-bound authentication. Key paste, other integrations and automatic model-service startup/download are not implemented.
+
+Home controls apply only to an explicitly declared Bridge/profile store. Native GPT execution and the official Claude Code SDK remain unchanged. Built-in Refresh requests are consumed on the next public Bridge model list; Home reports pending/stale state rather than promising native hot refresh. The existing startup helper is still required; this is not plugin-only ordinary-launch activation. See [the source increment and qualification limits](docs/home-connections.md). Normal-profile adoption and public release remain held.
+
 **Claude models in the Codex desktop app. By [Gustav Online](https://github.com/gustavonline).**
 
 Keep the interface you use: model picker, conversations, browser and file panels. Model Bridge adds a small local adapter beneath Codex. Native models stay on Codex; Claude runs through your installed, unmodified Claude Code binary and the official Agent SDK.
@@ -15,7 +21,9 @@ Keep the interface you use: model picker, conversations, browser and file panels
 - Read and coordinate bridge chats through one small session adapter.
 - Diagnose failures with correlated, rotating logs that omit message and credential content.
 
-No replacement UI, model API proxy, extra service or permanent daemon. The adapter lives and exits with the isolated app. AIOS is an optional inherited plugin, not a dependency.
+Other harnesses that T3 Code supports (Gemini through Antigravity, Cursor, Muse, Grok, fx, Kiro, Pi, OpenCode) are listed in the connection manager Home with their real state but do not run in Bridge yet: see [harnesses](docs/harnesses.md).
+
+No replacement UI, model API proxy, extra service or permanent daemon. The adapter lives and exits with the Codex app it was opened with. AIOS is an optional inherited plugin, not a dependency.
 
 ## Install
 
@@ -23,7 +31,9 @@ Requires macOS, Node.js 22 or newer, Python 3.11 or newer, and a compatible Code
 
 Download the installer ZIP from [Releases](https://github.com/gustavonline/codex-model-bridge/releases), extract it, and run `Install Model Bridge.command`. Preview releases may be marked prerelease. A source checkout can produce the same package with `npm run bundle -- --pin`.
 
-Alternatively, install the **Codex Model Bridge** plugin ZIP, then ask its `setup` skill to start setup. The plugin has two skills: setup and diagnose. Installing the skills alone does not execute scripts or start a daemon.
+Alternatively, install the **Codex Model Bridge** plugin ZIP, then ask its `setup` skill to start setup. The plugin has two skills: setup and diagnose. Installing the skills alone does not execute scripts or start a daemon. The current RC10 release installs and opens only the separate test window described below.
+
+The unreleased RC13 source (0.3.0-rc.13) registers a local MCP Apps Home with native global and thread entrypoints. Open **Model Bridge** directly from the host entrypoint; Home reads its state with an empty-argument public tool call, without a chat prompt. The default registration stays unbound/read-only. An explicitly operator-bound isolated deployment offers connection/catalog controls and model slots through public MCP tools; it never guesses a normal profile. The89a15ce layout/sidebar has owner acceptance. Root installed the reviewed5df09d0 provider-affinity repair only in the existing separate Mac test profile. Home v8 browser authentication and all-connection slots are a subsequent source candidate: live browser authorization, combined native picker refresh and owner GUI acceptance remain pending. See [Operations](docs/operations.md#custom-responses-provider-trial) and [Support](docs/support.md). Plugin registration does not attach model routing on an ordinary app launch: the existing startup helper is still required. Its installer prepares both launchers and opens neither; no normal-profile installation is authorized by this source change.
 
 The existing launcher is `~/Applications/Codex + Claude.command`; the stable CLI name is `codex-claude`:
 
@@ -36,6 +46,23 @@ codex-claude stop
 ```
 
 If the command is not on PATH, use `~/.local/share/codex-claude-bridge/node_modules/.bin/codex-claude`. Select a different app or existing isolated profile with `setup --app /path/to/Codex.app --state /path/to/profile`.
+
+### Claude in your normal Codex app (source preview, not released)
+
+Unreleased source adds an opt-in launcher for the normal Codex app, with your usual profile, chats and settings. It is a plugin plus a startup helper, not a plugin-only or permanent setting: Codex opened from the Dock, Spotlight or at login stays GPT-only.
+
+```sh
+codex-claude primary          # or open ~/Applications/Codex + Claude (main app).command
+codex-claude primary status
+```
+
+`setup` creates the double-click launcher. Quit Codex yourself once its chats are idle, then use it. It refuses while any copy of Codex runs or when that cannot be checked, and it never quits or restarts Codex. It checks that the app is the code-signed Codex app (com.openai.codex). It then opens that unchanged app once through macOS (`open -a … --env CODEX_CLI_PATH=…`), with a private startup script under the Bridge state as its app-server. The script starts the Bridge in front of the app's own bundled Codex CLI. Nothing is copied into or changed in your Codex profile or configuration; the setting applies until Codex quits. The Bridge keeps its own Claude transcripts and logs under `<state>/primary`.
+
+GPT remains the default; Claude appears in the model picker. New GPT chats also receive the Bridge's session tools. During a GPT turn, GPT can start a real Codex chat running Claude in the same workspace, with the same permissions, and read, message, queue, interrupt or fork it. Each step follows the chat's approval policy, and stopping the GPT turn ends any step still pending, including a message not yet accepted. A created chat's first message is sent at most once, also across Codex windows, and only to Claude: if you switch that chat to GPT before its first message, retries are refused until you select Claude again. When delivery cannot be confirmed, a retry is refused and the chat is left for you to check. To return to GPT-only Codex, quit it when idle and open it normally. Claude chats created this way then show only their native placeholder history until Codex is opened with the launcher again.
+
+Updating the Bridge requires that Codex opened with this launcher (and the separate test window) has been quit; the installer checks this and refuses otherwise, without quitting anything. Main-app logs are under `<state>/primary/logs`; `doctor` and `logs` read the separate window's state.
+
+This mode has synthetic startup and protocol tests only. It has not been run on a Mac.
 
 ## One configuration
 
@@ -65,7 +92,7 @@ Read [architecture](docs/architecture.md), [support and acceptance](docs/support
 
 ## Authentication and ownership
 
-The first desktop launch copies an existing Codex/OpenAI `auth.json` into the isolated profile (file mode 0600, profile mode 0700), so GPT can use the existing login. This is a separate credential snapshot: it is not continuously mirrored, and later login changes are not written back to normal Codex. Token-refresh interaction between separate snapshots is unqualified; a separate sign-in may be needed if one becomes stale. `codex-claude check` never copies this file or sends model prompts.
+The first desktop launch copies an existing Codex/OpenAI `auth.json` into the isolated profile (file mode 0600, profile mode 0700), so GPT can use the existing login. This is a separate credential snapshot: it is not continuously mirrored, and later login changes are not written back to normal Codex. Token-refresh interaction between separate snapshots is unqualified; a separate sign-in may be needed if one becomes stale. `codex-claude check` sends no model prompts and copies nothing from your Codex profile, including this file: from RC13 it checks protocol compatibility with a fresh synthetic profile, so it does not check your own configuration, model catalog, permissions or plugins.
 
 The bridge runs the unchanged Claude Code binary through the SDK. It does not read Claude credentials, imitate its HTTP client, distribute shared accounts or proxy usage. This preview selects the existing subscription login and filters inherited API/provider overrides to avoid accidentally switching billing. It does not implement an API-key product mode.
 

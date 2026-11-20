@@ -151,7 +151,8 @@ test('MCP relays real schemas, metadata, media and errors; shell retains Codex s
   const client = new Client({ name: 'test', version: '1' });
   await Promise.all([mcp.instance.connect(left), client.connect(right)]);
   const listing = await client.listTools();
-  assert.equal(listing.tools.length, 5);
+  // The sixth tool, read_history, is the intended bounded reader of this chat's own canonical history (see sonnet-history-route).
+  assert.deepEqual(listing.tools.map(t => t.name), ['find_tools', 'call_tool', 'find_skills', 'read_skill', 'shell', 'read_history']);
   assert.equal(JSON.stringify(listing).includes('Read a document'), false);
   const found = await client.callTool({ name: 'find_tools', arguments: { query: 'read document', limit: 1 } });
   const selected = JSON.parse(found.content[0].text).matches[0];

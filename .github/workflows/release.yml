@@ -27,7 +27,18 @@ jobs:
           BRIDGE_CLAUDE: /nonexistent/unit-test-must-not-start-claude
       - run: npm run bundle -- --check
       - run: npm run test:distribution
-      - name: Create a reviewable draft
+      - name: Check final artifacts
+        timeout-minutes: 5
+        run: node scripts/check-artifacts.mjs
+      # Upload only the exact checked files, confirmed unchanged in this same step;
+      # a failed check, missing record or changed byte stops before the release.
+      - name: Create a reviewable draft from the checked artifacts
+        timeout-minutes: 10
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.tgz dist/*.zip dist/SHA256SUMS --verify-tag --draft --prerelease --generate-notes
+        run: |
+          node scripts/check-artifacts.mjs --verify > "$RUNNER_TEMP/checked-artifacts"
+          files=()
+          while IFS= read -r file; do files+=("$file"); done < "$RUNNER_TEMP/checked-artifacts"
+          test "${#files[@]}" -eq 4
+          gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --draft --prerelease --generate-notes

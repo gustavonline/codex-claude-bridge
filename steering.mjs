@@ -64,9 +64,14 @@ export async function steerTurn(bridge, record, params) {
     bridge.log('steer.replayed', { threadId: record.thread.id, turnId: previous.turn.id });
     return { turnId: previous.turn.id };
   }
-  active(bridge, record, params);
+  const live = active(bridge, record, params);
   const queued = record.queue?.find(q => q.clientUserMessageId === params.clientUserMessageId);
   if (queued && !isDeepStrictEqual(queued.input, params.input)) throw new RpcError('Queued submission changed before steering', -32602);
+  // Consuming a queued message into a running Claude turn is starting queued work: the connection
+  // decision applies to every route here (queue/start, session start_queue, direct steering of the
+  // queued message). A new message steered into an admitted turn is not, and GPT turns are not Claude.
+  const refuseQueued = () => { const denied = queued && !live.native && bridge.claudeDenied(); if (denied) throw denied; };
+  refuseQueued();
   const entry = { params: structuredClone(params), queuedSubmissionId: queued?.id };
   const preceding = [...pending].at(-1)?.promise;
   pending.add(entry); bridge.pendingSteers.set(threadId, pending);
@@ -78,6 +83,7 @@ export async function steerTurn(bridge, record, params) {
     const application = contextFragments(params.additionalContext, 'application');
     const content = running.native ? null : await inputContent(params.input, params.additionalContext);
     active(bridge, record, params); // Images/context may have taken time to read.
+    refuseQueued(); // The decision may have changed while the input was prepared; nothing is committed yet.
     if (application.length && !running.native)
       content.push({ type: 'text', text: 'Additional application context supplied by Codex:\n' + JSON.stringify(application) });
     const turn = running.turn, clientId = params.clientUserMessageId ?? randomUUID();

@@ -149,7 +149,7 @@ test('Claude discovers session schemas lazily and invokes the same dynamic route
     mcp = makeTools({ native, desktop: { request: (...args) => f.bridge.toolRequest(...args) }, record, turn, item: () => {}, signal: controller.signal });
     client = new Client({ name: 'session-test', version: '1' });
     const [a, b] = InMemoryTransport.createLinkedPair(); await mcp.instance.connect(b); await client.connect(a);
-    assert.equal((await client.listTools()).tools.length, 5);
+    assert.deepEqual((await client.listTools()).tools.map(t => t.name), ['find_tools', 'call_tool', 'find_skills', 'read_skill', 'shell', 'read_history']);
     const matches = JSON.parse((await client.callTool({ name: 'find_tools', arguments: { query: 'codex_bridge_sessions read' } })).content[0].text).matches;
     const name = matches.find(m => m.name.includes('_read_')).name;
     const result = await client.callTool({ name: 'call_tool', arguments: { name, arguments: { operation: 'read', threadId: target } } });
