@@ -1,6 +1,6 @@
-<p align="center"><img src="plugins/codex-claude/assets/banner.svg" alt="Model Bridge — one workspace, more models" width="900"></p>
+<p align="center"><img src="plugins/codex-claude/assets/banner.svg" alt="Codex Model Bridge — one workspace, more models" width="900"></p>
 
-# Model Bridge
+# Codex Model Bridge
 
 **Claude models in the Codex desktop app. By [Gustav Online](https://github.com/gustavonline).**
 
@@ -21,9 +21,9 @@ No replacement UI, model API proxy, extra service or permanent daemon. The adapt
 
 Requires macOS, Node.js 22 or newer, Python 3.11 or newer, and a compatible Codex desktop app. Use your own Claude Code installation and login; the installer can install the official CLI when absent. Sign-in happens through Anthropic's own flow. Subscription access and remaining quota are separate checks.
 
-Download the installer ZIP from [Releases](https://github.com/gustavonline/codex-claude-bridge/releases), extract it, and run `Install Model Bridge.command`. Preview releases may be marked prerelease. A source checkout can produce the same package with `npm run bundle -- --pin`.
+Download the installer ZIP from [Releases](https://github.com/gustavonline/codex-model-bridge/releases), extract it, and run `Install Model Bridge.command`. Preview releases may be marked prerelease. A source checkout can produce the same package with `npm run bundle -- --pin`.
 
-Alternatively, install the **Model Bridge** plugin ZIP, then ask its `setup` skill to start setup. The plugin has two skills: setup and diagnose. Installing the skills alone does not execute scripts or start a daemon.
+Alternatively, install the **Codex Model Bridge** plugin ZIP, then ask its `setup` skill to start setup. The plugin has two skills: setup and diagnose. Installing the skills alone does not execute scripts or start a daemon.
 
 The existing launcher is `~/Applications/Codex + Claude.command`; the stable CLI name is `codex-claude`:
 
